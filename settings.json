@@ -1,5 +1,5 @@
 {
     "last_connection": "GATEWAY PAPER (4002)",
-    "last_instrument": "MES",
-    "use_virtual_tp": true
+    "last_instrument": "OMXS30",
+    "use_virtual_tp": false
 }

@@ -430,8 +430,9 @@ class SentinelManager(QObject):
     connection_lost_signal = pyqtSignal()
     flash_signal = pyqtSignal(str)
     sl_reject_signal = pyqtSignal()
-    arm_reject_signal = pyqtSignal()      # NYTT: Signal för oarmerad trade
-    cooldown_reject_signal = pyqtSignal() # NYTT: Signal för trade under cooldown
+    arm_reject_signal = pyqtSignal()      
+    cooldown_reject_signal = pyqtSignal() 
+    max_qty_reject_signal = pyqtSignal() # NYTT: Signal för max capacity nådd
 
     def __init__(self):
         super().__init__()
@@ -795,6 +796,7 @@ class SentinelManager(QObject):
         is_scaling = False
         if (self.pos_qty > 0 and action == "BUY") or (self.pos_qty < 0 and action == "SELL"):
             if abs(self.pos_qty) + qty > self.max_qty:
+                self.max_qty_reject_signal.emit() # NYTT: Säg till GUI:t att blinka!
                 self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
                 return
             is_scaling = True
@@ -991,6 +993,13 @@ class MjolnirGUI(QWidget):
         self.alarm_timer.timeout.connect(self.blink_connection_alarm)
         self.emergency_timer = QTimer()
         self.emergency_timer.timeout.connect(self.blink_emergency_ui)
+        
+        self.ammo_timer = QTimer()
+        self.ammo_timer.timeout.connect(self.blink_ammo_ui)
+        self.ammo_blink_state = False
+        self.ammo_blink_count = 0
+        self.is_maxed = False
+
         self.setup_connections()
         self.setup_hotkeys()
 
@@ -1075,7 +1084,6 @@ class MjolnirGUI(QWidget):
         # VIRTUAL TP & RISK INFO
         self.order_info_frame = QFrame()
         self.order_info_frame.setFixedHeight(90)
-        # FIX: Vi tog bort 'border: 1px solid #333;' och bytte till 'border: none;'
         self.order_info_frame.setStyleSheet("background-color: #111111; border: none; border-radius: 6px;")
         oi_layout = QVBoxLayout(self.order_info_frame)
         oi_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1085,7 +1093,7 @@ class MjolnirGUI(QWidget):
         self.lbl_hud_risk.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.lbl_hud_pending = QLabel("FLAT / WAITING")
-        self.lbl_hud_pending.setStyleSheet("color: #aaa; font-size: 11pt; font-family: Consolas;")
+        self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas;") # MODIFIED
         self.lbl_hud_pending.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.grace_bar = QProgressBar()
@@ -1110,24 +1118,24 @@ class MjolnirGUI(QWidget):
         self.lbl_dash_inst = QLabel("STANDBY"); self.lbl_dash_inst.setFixedWidth(130); self.lbl_dash_inst.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_dash_inst.setStyleSheet("color: #00ffff; font-weight: bold; font-family: Consolas;")
         self.lbl_size = QLabel("0"); self.lbl_size.setFixedWidth(130); self.lbl_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #444; font-family: Consolas;")
+        self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
         self.lbl_pips = QLabel("CAPACITY"); self.lbl_pips.setFixedWidth(130); self.lbl_pips.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pips.setStyleSheet("color: #555; font-size: 8pt; font-family: Consolas;")
+        self.lbl_pips.setStyleSheet("color: #999; font-size: 8pt; font-family: Consolas;") # MODIFIED
         p1.addWidget(self.lbl_dash_inst); p1.addStretch(); p1.addWidget(self.lbl_size); p1.addWidget(self.lbl_pips); p1.addStretch()
         
         p2 = QVBoxLayout(); p2.setAlignment(Qt.AlignmentFlag.AlignCenter)
         market_data_layout = QVBoxLayout(); market_data_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_dash_mkt = QLabel("MKT: ---"); self.lbl_dash_mkt.setStyleSheet("color: #aaa; font-family: Consolas;")
-        self.lbl_dash_avg = QLabel("AVG: ---"); self.lbl_dash_avg.setStyleSheet("color: #666; font-family: Consolas;")
+        self.lbl_dash_mkt = QLabel("MKT: ---"); self.lbl_dash_mkt.setStyleSheet("color: #cccccc; font-family: Consolas;") # MODIFIED
+        self.lbl_dash_avg = QLabel("AVG: ---"); self.lbl_dash_avg.setStyleSheet("color: #aaaaaa; font-family: Consolas;") # MODIFIED
         market_data_layout.addWidget(self.lbl_dash_mkt); market_data_layout.addWidget(self.lbl_dash_avg)
         self.lbl_dash_state = QLabel(""); self.lbl_dash_state.setStyleSheet("font-size: 26pt;")
         p2.addLayout(market_data_layout); p2.addStretch(); p2.addWidget(self.lbl_dash_state); p2.addStretch()
 
         p3 = QVBoxLayout(); p3.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_pnl_title = QLabel("NET POINTS"); self.lbl_pnl_title.setFixedWidth(130); self.lbl_pnl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pnl_title.setStyleSheet("color: #555; font-size: 9pt; font-family: Consolas;")
+        self.lbl_pnl_title.setStyleSheet("color: #999; font-size: 9pt; font-family: Consolas;") # MODIFIED
         self.lbl_pnl = QLabel("0.00"); self.lbl_pnl.setFixedWidth(130); self.lbl_pnl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #444; font-family: Consolas;")
+        self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
         p3.addStretch(); p3.addWidget(self.lbl_pnl_title); p3.addWidget(self.lbl_pnl); p3.addStretch()
 
         dash_layout.addLayout(p1, 0); dash_layout.addLayout(p2, 1); dash_layout.addLayout(p3, 0)
@@ -1147,7 +1155,7 @@ class MjolnirGUI(QWidget):
         self.inspector_window = TWSInspectorWindow(self)
 
         main_layout.addWidget(self.left_panel, stretch=1); main_layout.addLayout(right_layout, stretch=1); self.setLayout(main_layout)
-        
+
 
     def reset_connection_ui(self):
         # Fas 1: Återställer UI till startläget (Vit text = Klickbart, Grå = Oklickbart)
@@ -1175,6 +1183,30 @@ class MjolnirGUI(QWidget):
             self.btn_close.setStyleSheet("background-color: #8b0000; color: white; font-weight: bold; border-radius: 4px; border: 1px solid #ff0000;")
         else:
             self.btn_close.setStyleSheet("background-color: #2a2a2a; color: #ff4444; font-weight: bold; border-radius: 4px; border: 1px solid #552222;")
+
+    def blink_ammo_ui(self):
+        """Pulserar Ammo-mätaren 3 gånger när max kapacitet nås, sen lyser den fast."""
+        self.ammo_blink_count += 1
+        
+        # Stoppa efter 6 växlingar (3 hela blinkningar)
+        if self.ammo_blink_count > 6:
+            self.ammo_timer.stop()
+            self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
+            return
+
+        self.ammo_blink_state = not self.ammo_blink_state
+        if self.ammo_blink_state:
+            # Lyser upp
+            self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
+        else:
+            # Tonar ner
+            self.lbl_pips.setStyleSheet("color: #225555; font-size: 12pt; font-family: Consolas;")
+
+    def trigger_ammo_blink(self):
+        """Triggas manuellt om vi försöker handla över maxgränsen."""
+        self.ammo_blink_count = 0
+        if not self.ammo_timer.isActive():
+            self.ammo_timer.start(300)
 
     def do_connect(self):
         if getattr(self, 'alarm_active', False):
@@ -1284,9 +1316,9 @@ class MjolnirGUI(QWidget):
         self.manager.update_ui_state()
 
     def update_hud(self, data):
-        # 1. Background Shift
+        # 1. Background Shift (MODIFIED)
         if data.get('is_armed', False) and self.active_instrument_name:
-            self.setStyleSheet(f"background-color: {'#0a1a0a' if self.theme_color == '#2e7d32' else '#05101a'}; color: white;")
+            self.setStyleSheet("background-color: #082540; color: white;") # NY FÄRG!
         else:
             self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
 
@@ -1358,7 +1390,7 @@ class MjolnirGUI(QWidget):
                 self.lbl_hud_pending.setStyleSheet("color: #00ff00; font-size: 11pt; font-family: Consolas; background-color: transparent;")
             else:
                 self.lbl_hud_pending.setText("FLAT / WAITING")
-                self.lbl_hud_pending.setStyleSheet("color: #555; font-size: 11pt; font-family: Consolas; background-color: transparent;")
+                self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas; background-color: transparent;") # MODIFIED
         else:
             lock_icon = "🔒" if data.get('sl_locked', False) else "🔓"
             self.lbl_hud_risk.setText(f"LIVE RISK: {data['sl_pts']:.2f} pts {lock_icon}")
@@ -1377,6 +1409,42 @@ class MjolnirGUI(QWidget):
         
         # 4. Dashboard Updates
         curr_q = abs(data['pos'])
+        
+        # --- THE AMMO COUNTER LOGIC ---
+        max_q = self.manager.max_qty
+        filled_boxes = min(curr_q, max_q)
+        empty_boxes = max(0, max_q - curr_q)
+        ammo_str = ("■ " * filled_boxes + "□ " * empty_boxes).strip()
+        
+        if not self.active_instrument_name:
+            self.lbl_pips.setText("CAPACITY")
+            self.lbl_pips.setStyleSheet("color: #999; font-size: 8pt; font-family: Consolas;") # MODIFIED
+            if self.ammo_timer.isActive(): self.ammo_timer.stop()
+            self.is_maxed = False
+        else:
+            self.lbl_pips.setText(ammo_str)
+            if curr_q >= max_q:
+                # Maxat! Blinka 3 gånger snabbt om vi precis nått max.
+                if not self.is_maxed:
+                    self.is_maxed = True
+                    self.ammo_blink_count = 0
+                    if not self.ammo_timer.isActive():
+                        self.ammo_timer.start(300) # 300ms för rappt larm
+                elif not self.ammo_timer.isActive():
+                    # Timern är klar, håll den fast upplyst
+                    self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
+            elif curr_q > 0:
+                # Skott kvar. Stoppa pulsering, lys fast.
+                self.is_maxed = False
+                if self.ammo_timer.isActive(): self.ammo_timer.stop()
+                self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
+            else:
+                # Flat. Stoppa pulsering, lys grått.
+                self.is_maxed = False
+                if self.ammo_timer.isActive(): self.ammo_timer.stop()
+                self.lbl_pips.setStyleSheet("color: #777; font-size: 12pt; font-family: Consolas;") # MODIFIED
+        # ------------------------------
+
         self.lbl_dash_inst.setText(self.active_instrument_name if self.active_instrument_name else "CADET")
         self.lbl_size.setText(str(curr_q))
         self.lbl_pnl.setText(f"{data['pl']:+.2f}")
@@ -1390,8 +1458,8 @@ class MjolnirGUI(QWidget):
             elif data.get('trail_active'): self.lbl_dash_state.setText("🚀")
             else: self.lbl_dash_state.setText("⚡")
         else:
-            self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #444; font-family: Consolas;")
-            self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #444; font-family: Consolas;")
+            self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
+            self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
             self.lbl_dash_state.setText("")
 
         self.inspector_window.update_orders(
@@ -1402,7 +1470,7 @@ class MjolnirGUI(QWidget):
         if data.get('multi_sl_warning'):
             self.lbl_dash_state.setText("⚠")
             self.lbl_dash_state.setStyleSheet("color: #ff4444; font-size: 26pt;")
-
+              
     def on_instrument_selected(self, name):
         if name == "-- SELECT INSTRUMENT --":
             self.btn_lock.setEnabled(False)
@@ -1476,6 +1544,7 @@ class MjolnirGUI(QWidget):
         self.manager.sl_reject_signal.connect(self.blink_sl_warning)
         self.manager.arm_reject_signal.connect(self.blink_arm_warning)
         self.manager.cooldown_reject_signal.connect(self.blink_cooldown_warning)
+        self.manager.max_qty_reject_signal.connect(self.trigger_ammo_blink) # NYTT
 
     def blink_sl_warning(self):
         # Visuell smäll på fingrarna!
