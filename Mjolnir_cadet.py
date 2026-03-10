@@ -630,12 +630,14 @@ class SentinelManager(QObject):
         # ==========================================
         has_multiple_sl = False
         expected_sl = 0.0 
+        current_active_sl = 0.0 # NYTT: Håller koll på var vår faktiska SL ligger
 
         if pending_anchor > 0.0:
             expected_sl = round(round((pending_anchor - (self.sl_points * pending_direction)) / self.min_tick) * self.min_tick, 4)
 
         if self.is_armed and len(active_stops) > 0:
             master_sl = active_stops[0]
+            current_active_sl = master_sl['price']
 
             # A. MAGNETIC BRACKET (Innan fyllning)
             if self.pos_qty == 0 and pending_anchor > 0.0:
@@ -667,6 +669,20 @@ class SentinelManager(QObject):
                             self.log_signal.emit(f"MERGE: Cancelled overlapping SL order.")
         else:
             self._last_pending_anchor = 0.0
+            current_active_sl = expected_sl
+
+        # ==========================================
+        # NY LOGIK: BERÄKNA SECURED PROFIT ELLER RISK
+        # ==========================================
+        secured_pts = 0.0
+        if self.pos_qty != 0:
+            direction = 1 if self.pos_qty > 0 else -1
+            if current_active_sl > 0.0:
+                secured_pts = (current_active_sl - self.avg_price) * direction
+            else:
+                secured_pts = -self.sl_points
+        else:
+            secured_pts = -self.sl_points
 
         data = {
             'pos': int(self.pos_qty), 'avg': self.avg_price, 'price': self.current_price,
@@ -682,9 +698,9 @@ class SentinelManager(QObject):
             'multi_sl_warning': has_multiple_sl,
             'pending_entry': pending_anchor, 
             'pending_sl': expected_sl,
-            # NYTT: Data för UI-uppdateringar
             'sl_locked': getattr(self, 'sl_locked', False),
-            'grace_remaining': getattr(self, 'grace_time_remaining', 0)
+            'grace_remaining': getattr(self, 'grace_time_remaining', 0),
+            'secured_pts': secured_pts # NYTT: Data skickas till GUI
         }
 
         if self.pos_qty != 0:
@@ -835,11 +851,11 @@ class SentinelManager(QObject):
         self.update_ui_state()
 
     def nudge_order(self, order_type: str, price_ticks: int):
-        # NYTT: GUARD RAIL FÖR SL RETREAT
+        # 1. RETREAT LOCK GUARD RAIL
         if order_type == 'SL' and self.pos_qty != 0:
             if price_ticks < 0: # Försöker flytta SL BORT från priset (öka risken)
                 if self.sl_locked:
-                    self.sl_reject_signal.emit() # Avbryt och signalera till UI
+                    self.sl_reject_signal.emit()
                     self.log_signal.emit("GUARD RAIL: SL Retreat BLOCKED. 🔒")
                     return
             elif price_ticks > 0: # Försöker flytta SL NÄRMARE priset (minska risken)
@@ -849,47 +865,68 @@ class SentinelManager(QObject):
                     self.grace_time_remaining = 0
                     self.log_signal.emit("CADET: Risk reduced. SL Direction Locked early. 🔒")
 
-        # 1. UPPDATERA MJÖLNIRS INTERNA MINNE
-        if order_type == 'SL':
-            self.sl_points = max(self.min_tick, self.sl_points - (price_ticks * self.min_tick))
-        elif order_type == 'TP':
-            self.tp_points = max(self.min_tick, self.tp_points + (price_ticks * self.min_tick))
+        direction = 1 if self.pos_qty > 0 else -1
+        current_price = 0.0
+        is_live_nudge = False
 
-        self.update_ui_state()
-        self._pending_log_type = order_type 
+        # 2. HITTA DET FAKTISKA PRISET ATT NUDGA (Live eller Pending)
+        if self.is_armed and self.pos_qty != 0:
+            for p in self.providers:
+                if p.is_connected():
+                    # Prioritera en nudge som redan ligger i kön, annars hämta live från IBKR
+                    current_price = self.pending_nudges.get(order_type, p.get_order_price(order_type))
+                    if current_price > 0.0: 
+                        is_live_nudge = True
+                        break
 
-        # 2. FLYTTA FYSISK ORDER (Endast om armerad)
-        if self.is_armed:
-            anchor = 0.0
-            direction = 1
+        if current_price == 0.0:
+            # Fallback (Platt läge, ingen position ännu)
+            anchor = getattr(self, '_last_pending_anchor', 0.0)
+            if anchor == 0.0: return # Inget att nudga
+            
+            # Kolla riktning på limit-ordern
+            for p in self.providers:
+                if p.is_connected() and p.contract:
+                    for t in p.ib.openTrades():
+                        if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                            if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
+                                direction = 1 if t.order.action == "BUY" else -1
+                                break
 
-            if self.pos_qty != 0:
-                anchor = self.avg_price
-                direction = 1 if self.pos_qty > 0 else -1
-            else:
-                for p in self.providers:
-                    if p.is_connected() and p.contract:
-                        for t in p.ib.openTrades():
-                            if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
-                                if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
-                                    anchor = getattr(t.order, 'lmtPrice', getattr(t.order, 'auxPrice', 0.0))
-                                    direction = 1 if t.order.action == "BUY" else -1
-                                    break
+            if order_type == 'SL':
+                current_price = anchor - (self.sl_points * direction)
+            elif order_type == 'TP':
+                current_price = anchor + (self.tp_points * direction)
 
-            if anchor > 0.0:
-                exact_price = 0.0
+        if current_price > 0.0:
+            # 3. APPLICERA NUDGE PÅ FAKTISKT PRIS
+            exact_price = round(current_price + (price_ticks * self.min_tick * direction), 4)
+
+            # 4. UPPDATERA MJÖLNIRS MINNE OCH TRAIL-LOGIK
+            if not is_live_nudge:
+                # Uppdatera bas-parametrarna om vi är platta (Planerad Risk)
                 if order_type == 'SL':
-                    exact_price = round(round((anchor - (self.sl_points * direction)) / self.min_tick) * self.min_tick, 4)
+                    self.sl_points = max(self.min_tick, self.sl_points - (price_ticks * self.min_tick))
                 elif order_type == 'TP':
-                    exact_price = round(round((anchor + (self.tp_points * direction)) / self.min_tick) * self.min_tick, 4)
+                    self.tp_points = max(self.min_tick, self.tp_points + (price_ticks * self.min_tick))
+                self.update_ui_state()
+            else:
+                # --- THE SMART TRAIL SYNC ---
+                # Om vi är i en Live-trade och Trail är aktiv, och vi tvingar SL närmare...
+                if self.trail_active and order_type == 'SL':
+                    new_dist = (self.peak_price - exact_price) * direction
+                    if new_dist > 0:
+                        self.current_trail_distance = new_dist
+                        self.log_signal.emit(f"⚙️ TRAIL SYNC: Tighter distance set ({new_dist:.2f} pts)")
+                        # Tvinga HUD att uppdatera "Trail Config Bar" omedelbart
+                        QTimer.singleShot(100, self.update_ui_state)
 
-                if exact_price > 0.0:
-                    self.pending_nudges[order_type] = exact_price
-
-        self.nudge_timer.start(400)
+            self.pending_nudges[order_type] = exact_price
+            self.nudge_timer.start(400)
+            self._pending_log_type = order_type
 
     def commit_nudges(self):
-        # 1. Utför API-anrop om vi är live
+        # 1. Utför API-anropet till IBKR
         for ref, price in self.pending_nudges.items():
             for p in self.providers:
                 if p.is_connected(): p.modify_order(ref, price)
@@ -897,13 +934,11 @@ class SentinelManager(QObject):
             
         self.pending_nudges.clear()
 
-        # 2. Skriv ut den debouncade UI-loggen (visas oavsett om vi är i SAFE eller ARMED)
+        # 2. Skriv ut UI-logg (visas oavsett om vi är i SAFE eller ARMED)
         if hasattr(self, '_pending_log_type') and self._pending_log_type:
             ref = self._pending_log_type
-            pts = self.sl_points if ref == 'SL' else self.tp_points
-            self.log_signal.emit(f"CADET: {ref} Profile locked at {pts:.2f} pts")
+            self.log_signal.emit(f"CADET: {ref} limit dynamically adjusted.")
             self._pending_log_type = None
-            
 
     def execute_close(self):
         for p in self.providers:
@@ -1069,31 +1104,135 @@ class MjolnirGUI(QWidget):
         # --- RIGHT COLUMN (TACTICAL HUD) ---
         right_layout = QVBoxLayout(); right_layout.setSpacing(10)
 
-        # Header: Ticker + Master Arm
+        # Header: Ticker + Inspector + Master Arm
         hud_top_layout = QHBoxLayout()
         self.btn_collapse = QPushButton("◀"); self.btn_collapse.setFixedSize(30, 30); self.btn_collapse.clicked.connect(self.toggle_panel)
         self.lbl_ticker = MarqueeLabel(); self.lbl_ticker.set_custom_text("SYSTEM STANDBY", "#888888")
+        
+        self.btn_inspector = QPushButton("🔍 INSP"); self.btn_inspector.setFixedSize(70, 30)
+        self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
+        self.btn_inspector.clicked.connect(self.toggle_inspector)
         
         self.btn_arm = QPushButton("SAFE"); self.btn_arm.setCheckable(True); self.btn_arm.setFixedSize(80, 35)
         self.btn_arm.setStyleSheet("background-color: #222222; color: #444444; font-weight: bold; border-radius: 4px; border: 1px solid #444444;")
         self.btn_arm.clicked.connect(self.toggle_arm)
         
-        hud_top_layout.addWidget(self.btn_collapse); hud_top_layout.addWidget(self.lbl_ticker, stretch=1); hud_top_layout.addWidget(self.btn_arm)
+        hud_top_layout.addWidget(self.btn_collapse); hud_top_layout.addWidget(self.lbl_ticker, stretch=1); hud_top_layout.addWidget(self.btn_inspector); hud_top_layout.addWidget(self.btn_arm)
         right_layout.addLayout(hud_top_layout)
 
-        # VIRTUAL TP & RISK INFO
+        # ==========================================
+        # THE VERTICAL TACTICAL HUD
+        # ==========================================
+        self.tactical_frame = QFrame()
+        self.tactical_frame.setStyleSheet("background-color: #151515; border-radius: 8px;")
+        dash_layout = QVBoxLayout(self.tactical_frame)
+        dash_layout.setContentsMargins(15, 15, 15, 15)
+        dash_layout.setSpacing(10)
+
+        # --- BLOCK 1: SIZE ---
+        size_layout = QVBoxLayout()
+        size_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_dash_inst = QLabel("SIZE")
+        self.lbl_dash_inst.setStyleSheet("color: #999; font-size: 10pt; font-family: Consolas; font-weight: bold;")
+        self.lbl_dash_inst.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_size = QLabel("0")
+        self.lbl_size.setStyleSheet("font-size: 32pt; font-weight: bold; color: #777; font-family: Consolas;")
+        self.lbl_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_pips = QLabel("CAPACITY")
+        self.lbl_pips.setStyleSheet("color: #999; font-size: 10pt; font-family: Consolas;")
+        self.lbl_pips.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        size_layout.addWidget(self.lbl_dash_inst)
+        size_layout.addWidget(self.lbl_size)
+        size_layout.addWidget(self.lbl_pips)
+        dash_layout.addLayout(size_layout)
+
+        line1 = QFrame(); line1.setFrameShape(QFrame.Shape.HLine); line1.setStyleSheet("background-color: #333;")
+        dash_layout.addWidget(line1)
+
+        # --- BLOCK 2: PNL ---
+        pnl_layout = QVBoxLayout()
+        pnl_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_pnl_title = QLabel("OPEN PNL")
+        self.lbl_pnl_title.setStyleSheet("color: #999; font-size: 10pt; font-family: Consolas; font-weight: bold;")
+        self.lbl_pnl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_pnl = QLabel("0.00")
+        self.lbl_pnl.setStyleSheet("font-size: 32pt; font-weight: bold; color: #777; font-family: Consolas;")
+        self.lbl_pnl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        mkt_avg_layout = QHBoxLayout()
+        self.lbl_dash_mkt = QLabel("MKT: ---"); self.lbl_dash_mkt.setMinimumWidth(130)
+        self.lbl_dash_mkt.setStyleSheet("color: #888; font-family: Consolas; font-size: 10pt;")
+        self.lbl_dash_mkt.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        
+        self.lbl_dash_state = QLabel("🛡️"); self.lbl_dash_state.setMinimumWidth(40)
+        self.lbl_dash_state.setStyleSheet("font-size: 14pt;")
+        self.lbl_dash_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.lbl_dash_avg = QLabel("AVG: ---"); self.lbl_dash_avg.setMinimumWidth(130)
+        self.lbl_dash_avg.setStyleSheet("color: #888; font-family: Consolas; font-size: 10pt;")
+        self.lbl_dash_avg.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        
+        mkt_avg_layout.addWidget(self.lbl_dash_mkt)
+        mkt_avg_layout.addWidget(self.lbl_dash_state)
+        mkt_avg_layout.addWidget(self.lbl_dash_avg)
+        
+        pnl_layout.addWidget(self.lbl_pnl_title)
+        pnl_layout.addWidget(self.lbl_pnl)
+        pnl_layout.addLayout(mkt_avg_layout)
+        dash_layout.addLayout(pnl_layout)
+
+        line2 = QFrame(); line2.setFrameShape(QFrame.Shape.HLine); line2.setStyleSheet("background-color: #333;")
+        dash_layout.addWidget(line2)
+
+        # --- BLOCK 3: RISK ---
+        risk_layout = QVBoxLayout()
+        risk_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_trade_status_title = QLabel("PLANNED RISK")
+        self.lbl_trade_status_title.setStyleSheet("color: #999; font-size: 10pt; font-family: Consolas; font-weight: bold;")
+        self.lbl_trade_status_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_trade_status = QLabel("0.00")
+        self.lbl_trade_status.setStyleSheet("font-size: 32pt; font-weight: bold; color: #ffaa00; font-family: Consolas;")
+        self.lbl_trade_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        risk_details_layout = QHBoxLayout()
+        self.lbl_left_price = QLabel("ENTRY: ---"); self.lbl_left_price.setMinimumWidth(130)
+        self.lbl_left_price.setStyleSheet("color: #888; font-family: Consolas; font-size: 10pt;")
+        self.lbl_left_price.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        
+        self.lbl_status_icon = QLabel("🔓"); self.lbl_status_icon.setMinimumWidth(40)
+        self.lbl_status_icon.setStyleSheet("font-size: 14pt;")
+        self.lbl_status_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.lbl_right_price = QLabel("STOP: ---"); self.lbl_right_price.setMinimumWidth(130)
+        self.lbl_right_price.setStyleSheet("color: #888; font-family: Consolas; font-size: 10pt;")
+        self.lbl_right_price.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        
+        risk_details_layout.addWidget(self.lbl_left_price)
+        risk_details_layout.addWidget(self.lbl_status_icon)
+        risk_details_layout.addWidget(self.lbl_right_price)
+        
+        risk_layout.addWidget(self.lbl_trade_status_title)
+        risk_layout.addWidget(self.lbl_trade_status)
+        risk_layout.addLayout(risk_details_layout)
+        dash_layout.addLayout(risk_layout)
+
+        right_layout.addWidget(self.tactical_frame)
+
+        # --- TRAIL CONFIG BAR ---
+        self.lbl_trail_config = QLabel("⚙️ TRAIL CONFIG: ---")
+        self.lbl_trail_config.setStyleSheet("color: #666; font-family: Consolas; font-size: 10pt;")
+        self.lbl_trail_config.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_layout.addWidget(self.lbl_trail_config)
+
+        # VIRTUAL TP & GRACE INFO (Behåller för grace baren)
         self.order_info_frame = QFrame()
-        self.order_info_frame.setFixedHeight(90)
+        self.order_info_frame.setFixedHeight(50)
         self.order_info_frame.setStyleSheet("background-color: #111111; border: none; border-radius: 6px;")
         oi_layout = QVBoxLayout(self.order_info_frame)
         oi_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        self.lbl_hud_risk = QLabel("PLANNED RISK: ---")
-        self.lbl_hud_risk.setStyleSheet("color: #ffaa00; font-size: 14pt; font-weight: bold; font-family: Consolas;")
-        self.lbl_hud_risk.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
         self.lbl_hud_pending = QLabel("FLAT / WAITING")
-        self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas;") # MODIFIED
+        self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas;") 
         self.lbl_hud_pending.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.grace_bar = QProgressBar()
@@ -1104,53 +1243,17 @@ class MjolnirGUI(QWidget):
         self.grace_bar.setStyleSheet("QProgressBar { background-color: transparent; border: none; } QProgressBar::chunk { background-color: #00ffaa; }")
         self.grace_bar.hide()
 
-        oi_layout.addWidget(self.lbl_hud_risk)
         oi_layout.addWidget(self.lbl_hud_pending)
         oi_layout.addWidget(self.grace_bar) 
         
         right_layout.addWidget(self.order_info_frame)
-
-        # Dashboard (Anchored)
-        self.tactical_frame = QFrame(); self.tactical_frame.setFixedHeight(120); self.tactical_frame.setStyleSheet("background-color: #151515; border-radius: 8px;")
-        dash_layout = QHBoxLayout(self.tactical_frame); dash_layout.setContentsMargins(10, 8, 10, 8)
-
-        p1 = QVBoxLayout(); p1.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_dash_inst = QLabel("STANDBY"); self.lbl_dash_inst.setFixedWidth(130); self.lbl_dash_inst.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_dash_inst.setStyleSheet("color: #00ffff; font-weight: bold; font-family: Consolas;")
-        self.lbl_size = QLabel("0"); self.lbl_size.setFixedWidth(130); self.lbl_size.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
-        self.lbl_pips = QLabel("CAPACITY"); self.lbl_pips.setFixedWidth(130); self.lbl_pips.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pips.setStyleSheet("color: #999; font-size: 8pt; font-family: Consolas;") # MODIFIED
-        p1.addWidget(self.lbl_dash_inst); p1.addStretch(); p1.addWidget(self.lbl_size); p1.addWidget(self.lbl_pips); p1.addStretch()
-        
-        p2 = QVBoxLayout(); p2.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        market_data_layout = QVBoxLayout(); market_data_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_dash_mkt = QLabel("MKT: ---"); self.lbl_dash_mkt.setStyleSheet("color: #cccccc; font-family: Consolas;") # MODIFIED
-        self.lbl_dash_avg = QLabel("AVG: ---"); self.lbl_dash_avg.setStyleSheet("color: #aaaaaa; font-family: Consolas;") # MODIFIED
-        market_data_layout.addWidget(self.lbl_dash_mkt); market_data_layout.addWidget(self.lbl_dash_avg)
-        self.lbl_dash_state = QLabel(""); self.lbl_dash_state.setStyleSheet("font-size: 26pt;")
-        p2.addLayout(market_data_layout); p2.addStretch(); p2.addWidget(self.lbl_dash_state); p2.addStretch()
-
-        p3 = QVBoxLayout(); p3.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pnl_title = QLabel("NET POINTS"); self.lbl_pnl_title.setFixedWidth(130); self.lbl_pnl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pnl_title.setStyleSheet("color: #999; font-size: 9pt; font-family: Consolas;") # MODIFIED
-        self.lbl_pnl = QLabel("0.00"); self.lbl_pnl.setFixedWidth(130); self.lbl_pnl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
-        p3.addStretch(); p3.addWidget(self.lbl_pnl_title); p3.addWidget(self.lbl_pnl); p3.addStretch()
-
-        dash_layout.addLayout(p1, 0); dash_layout.addLayout(p2, 1); dash_layout.addLayout(p3, 0)
-        right_layout.addWidget(self.tactical_frame)
+        right_layout.addStretch(1) # Trycker ner Kill Switch till botten
 
         # KILL SWITCH
         self.btn_close = QPushButton("EMERGENCY CLOSE ALL"); self.btn_close.setFixedHeight(45)
         self.btn_close.setStyleSheet("background-color: #2a2a2a; color: #ff4444; font-weight: bold; border-radius: 4px; border: 1px solid #552222;")
         self.btn_close.clicked.connect(self.manager.execute_close)
         right_layout.addWidget(self.btn_close)
-
-        self.btn_inspector = QPushButton("OPEN INSPECTOR"); self.btn_inspector.setFixedHeight(25)
-        self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333;")
-        self.btn_inspector.clicked.connect(self.toggle_inspector)
-        right_layout.addWidget(self.btn_inspector)
 
         self.inspector_window = TWSInspectorWindow(self)
 
@@ -1316,9 +1419,9 @@ class MjolnirGUI(QWidget):
         self.manager.update_ui_state()
 
     def update_hud(self, data):
-        # 1. Background Shift (MODIFIED)
+        # 1. Background Shift 
         if data.get('is_armed', False) and self.active_instrument_name:
-            self.setStyleSheet("background-color: #082540; color: white;") # NY FÄRG!
+            self.setStyleSheet("background-color: #082540; color: white;") 
         else:
             self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
 
@@ -1353,7 +1456,6 @@ class MjolnirGUI(QWidget):
                     self.btn_arm.setText("ARMED")
                     self.btn_arm.setStyleSheet(f"background-color: {self.theme_color}; color: white; font-weight: bold; border-radius: 4px; border: 1px solid #0088aa;")
                     
-                    # NY GUARD RAIL: Inaktivera disconnect och unlock när vi är ARMED!
                     self.btn_connect.setEnabled(False)
                     self.btn_connect.setStyleSheet("background-color: #222222; color: #555555; font-size: 14pt; border-radius: 4px; border: 1px solid #333333;")
                     self.btn_lock.setEnabled(False)
@@ -1363,7 +1465,6 @@ class MjolnirGUI(QWidget):
                     arm_text = "white" if is_inst_locked else "#444"
                     self.btn_arm.setStyleSheet(f"background-color: #222222; color: {arm_text}; font-weight: bold; border-radius: 4px; border: 1px solid #444444;")
                     
-                    # Återställ knapparna när vi går tillbaka till SAFE
                     if self.ib_provider.is_connected():
                         self.btn_connect.setEnabled(True)
                         self.btn_connect.setStyleSheet(f"background-color: {self.theme_color}; color: #ffffff; font-size: 14pt; border-radius: 4px; border: 1px solid #0088aa;")
@@ -1375,25 +1476,59 @@ class MjolnirGUI(QWidget):
                         self.btn_lock.setEnabled(True)
                         self.btn_lock.setStyleSheet("background-color: #333333; color: #ffffff; font-size: 14pt; border-radius: 4px; border: 1px solid #555555;")
 
-        # 3. Textbaserad Risk- och Pending-display med Grace Period & Cooldown
-        if data['pos'] == 0:
-            self.lbl_hud_risk.setText(f"PLANNED RISK: {data['sl_pts']:.2f} pts")
+        # 3. VERTICAL HUD & GRACE LOGIC
+        direction = data.get('display_direction', 1)
+        curr_q = abs(data['pos'])
+        
+        if curr_q == 0:
+            self.lbl_trade_status_title.setText("PLANNED RISK")
+            self.lbl_trade_status.setText(f"{data['sl_pts']:.2f}")
+            
+            if not getattr(self, '_sl_warning_active', False):
+                self.lbl_trade_status.setStyleSheet("color: #ffaa00; font-size: 32pt; font-weight: bold; font-family: Consolas;")
+                
+            pending_entry = data.get('pending_entry', 0.0)
+            pending_sl = data.get('pending_sl', 0.0)
+            
+            self.lbl_left_price.setText(f"ENTRY: {pending_entry:.2f}" if pending_entry > 0 else "ENTRY: ---")
+            self.lbl_right_price.setText(f"STOP: {pending_sl:.2f}" if pending_entry > 0 else "STOP: ---")
+            self.lbl_status_icon.setText("🔓")
             self.grace_bar.hide()
             
             if data.get('pt_cooldown', False):
                 self.lbl_hud_pending.setText(f"COOLDOWN: {data['pt_remaining']}s ⏳")
-                # GUARD: Rör inte cooldown-lådans färg om en varning blinkar
                 if not getattr(self, '_cooldown_warning_active', False):
                     self.lbl_hud_pending.setStyleSheet("color: #ffaa00; font-size: 12pt; font-weight: bold; font-family: Consolas; background-color: transparent;")
-            elif data.get('pending_entry', 0.0) > 0.0:
-                self.lbl_hud_pending.setText(f"PENDING ENTRY: {data['pending_entry']:.2f}  |  HARD STOP: {data['pending_sl']:.2f}")
+            elif pending_entry > 0.0:
+                self.lbl_hud_pending.setText("LIMIT ORDER ACTIVE")
                 self.lbl_hud_pending.setStyleSheet("color: #00ff00; font-size: 11pt; font-family: Consolas; background-color: transparent;")
             else:
                 self.lbl_hud_pending.setText("FLAT / WAITING")
-                self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas; background-color: transparent;") # MODIFIED
+                self.lbl_hud_pending.setStyleSheet("color: #999; font-size: 11pt; font-family: Consolas; background-color: transparent;") 
         else:
-            lock_icon = "🔒" if data.get('sl_locked', False) else "🔓"
-            self.lbl_hud_risk.setText(f"LIVE RISK: {data['sl_pts']:.2f} pts {lock_icon}")
+            secured = data.get('secured_pts', 0.0)
+            if not getattr(self, '_sl_warning_active', False):
+                if secured > 0:
+                    self.lbl_trade_status_title.setText("SECURED PROFIT")
+                    self.lbl_trade_status.setText(f"+{secured:.2f}")
+                    self.lbl_trade_status.setStyleSheet("color: #00ff00; font-size: 32pt; font-weight: bold; font-family: Consolas;")
+                else:
+                    self.lbl_trade_status_title.setText("LIVE RISK")
+                    self.lbl_trade_status.setText(f"{abs(secured):.2f}")
+                    self.lbl_trade_status.setStyleSheet("color: #ffaa00; font-size: 32pt; font-weight: bold; font-family: Consolas;")
+
+            self.lbl_status_icon.setText("🔒" if data.get('sl_locked', False) else "🔓")
+            
+            # MATEMATIK: Räkna ut fysiskt SL-pris baserat på säkrade poäng
+            current_sl = data['avg'] + (secured * direction)
+            self.lbl_right_price.setText(f"STOP: {current_sl:.2f}")
+            
+            if data.get('trail_active'):
+                self.lbl_left_price.setText(f"PEAK: {self.manager.peak_price:.2f}")
+            elif self.manager.use_virtual_tp and self.manager.virtual_tp > 0:
+                self.lbl_left_price.setText(f"TARGET: {self.manager.virtual_tp:.2f}")
+            else:
+                self.lbl_left_price.setText("TARGET: ---")
             
             if not data.get('sl_locked', False):
                 self.grace_bar.show()
@@ -1401,76 +1536,82 @@ class MjolnirGUI(QWidget):
             else:
                 self.grace_bar.hide()
                 
-            tp_text = f"VIRTUAL TP: {self.manager.virtual_tp:.2f}" if self.manager.use_virtual_tp and self.manager.virtual_tp > 0.0 else "MANUAL TP (NO TARGET)"
-            self.lbl_hud_pending.setText(f"POSITION LIVE  |  {tp_text}")
+            self.lbl_hud_pending.setText("POSITION LIVE")
             self.lbl_hud_pending.setStyleSheet("color: #00ffff; font-size: 11pt; font-family: Consolas; background-color: transparent;")
 
         self.chk_virtual_tp.setEnabled(not data['is_armed'])
         
-        # 4. Dashboard Updates
-        curr_q = abs(data['pos'])
-        
-        # --- THE AMMO COUNTER LOGIC ---
+        # 4. AMMO & DASHBOARD 
         max_q = self.manager.max_qty
         filled_boxes = min(curr_q, max_q)
         empty_boxes = max(0, max_q - curr_q)
         ammo_str = ("■ " * filled_boxes + "□ " * empty_boxes).strip()
         
         if not self.active_instrument_name:
+            self.lbl_dash_inst.setText("SIZE")
             self.lbl_pips.setText("CAPACITY")
-            self.lbl_pips.setStyleSheet("color: #999; font-size: 8pt; font-family: Consolas;") # MODIFIED
+            self.lbl_pips.setStyleSheet("color: #999; font-size: 10pt; font-family: Consolas;") 
             if self.ammo_timer.isActive(): self.ammo_timer.stop()
             self.is_maxed = False
         else:
+            self.lbl_dash_inst.setText(f"SIZE ({self.active_instrument_name})")
             self.lbl_pips.setText(ammo_str)
             if curr_q >= max_q:
-                # Maxat! Blinka 3 gånger snabbt om vi precis nått max.
                 if not self.is_maxed:
                     self.is_maxed = True
                     self.ammo_blink_count = 0
-                    if not self.ammo_timer.isActive():
-                        self.ammo_timer.start(300) # 300ms för rappt larm
+                    if not self.ammo_timer.isActive(): self.ammo_timer.start(300)
                 elif not self.ammo_timer.isActive():
-                    # Timern är klar, håll den fast upplyst
                     self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
             elif curr_q > 0:
-                # Skott kvar. Stoppa pulsering, lys fast.
                 self.is_maxed = False
                 if self.ammo_timer.isActive(): self.ammo_timer.stop()
                 self.lbl_pips.setStyleSheet("color: #00ffff; font-size: 12pt; font-family: Consolas;")
             else:
-                # Flat. Stoppa pulsering, lys grått.
                 self.is_maxed = False
                 if self.ammo_timer.isActive(): self.ammo_timer.stop()
-                self.lbl_pips.setStyleSheet("color: #777; font-size: 12pt; font-family: Consolas;") # MODIFIED
-        # ------------------------------
+                self.lbl_pips.setStyleSheet("color: #777; font-size: 12pt; font-family: Consolas;") 
 
-        self.lbl_dash_inst.setText(self.active_instrument_name if self.active_instrument_name else "CADET")
         self.lbl_size.setText(str(curr_q))
         self.lbl_pnl.setText(f"{data['pl']:+.2f}")
         self.lbl_dash_mkt.setText(f"MKT: {data['price']:.2f}" if data['price'] > 0 else "MKT: ---")
         self.lbl_dash_avg.setText(f"AVG: {data['avg']:.2f}" if data['pos'] != 0 else "AVG: ---")
         
+        # Färg, Font och Hjärt-ikonen (Heartbeat)
         if curr_q > 0:
-            self.lbl_size.setStyleSheet(f"font-size: 28pt; font-weight: bold; color: {'#44ff44' if data['pos'] > 0 else '#ff4444'}; font-family: Consolas;")
-            self.lbl_pnl.setStyleSheet(f"font-size: 28pt; font-weight: bold; color: {'#00ff00' if data['pl'] > 0 else '#ff4444' if data['pl'] < 0 else '#aaa'}; font-family: Consolas;")
+            self.lbl_size.setStyleSheet(f"font-size: 32pt; font-weight: bold; color: {'#44ff44' if data['pos'] > 0 else '#ff4444'}; font-family: Consolas;")
+            self.lbl_pnl.setStyleSheet(f"font-size: 32pt; font-weight: bold; color: {'#00ff00' if data['pl'] > 0 else '#ff4444' if data['pl'] < 0 else '#aaa'}; font-family: Consolas;")
+            
             if data.get('turbo_mode'): self.lbl_dash_state.setText("🔥")
             elif data.get('trail_active'): self.lbl_dash_state.setText("🚀")
             else: self.lbl_dash_state.setText("⚡")
         else:
-            self.lbl_size.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
-            self.lbl_pnl.setStyleSheet("font-size: 28pt; font-weight: bold; color: #777; font-family: Consolas;") # MODIFIED
-            self.lbl_dash_state.setText("")
+            self.lbl_size.setStyleSheet("font-size: 32pt; font-weight: bold; color: #777; font-family: Consolas;") 
+            self.lbl_pnl.setStyleSheet("font-size: 32pt; font-weight: bold; color: #777; font-family: Consolas;") 
+            self.lbl_dash_state.setText("🛡️")
+
+        # Överskrid hjärt-ikonen om det finns en kritisk varning
+        if data.get('multi_sl_warning'):
+            self.lbl_dash_state.setText("⚠")
+            self.lbl_dash_state.setStyleSheet("color: #ff4444; font-size: 16pt;")
+            
+        # Uppdatera Trail Config Bar längst ner
+        if data.get('trail_active'):
+            dist = self.manager.current_trail_distance
+            self.lbl_trail_config.setText(f"🚀 TRAILING ACTIVE (Distance: {dist:.1f} pts)")
+            self.lbl_trail_config.setStyleSheet("color: #00ffff; font-family: Consolas; font-size: 10pt; font-weight: bold;")
+        else:
+            t_pts = self.manager.trail_points
+            tb_pts = self.manager.tight_trail_points
+            self.lbl_trail_config.setText(f"⚙️ TRAIL CONFIG: {t_pts:.1f} pts  (Turbo: {tb_pts:.1f} pts)")
+            self.lbl_trail_config.setStyleSheet("color: #666; font-family: Consolas; font-size: 10pt;")
 
         self.inspector_window.update_orders(
             data.get('tws_orders', []), 
             data.get('other_activity', []), 
             data.get('multi_sl_warning', False)
         )
-        if data.get('multi_sl_warning'):
-            self.lbl_dash_state.setText("⚠")
-            self.lbl_dash_state.setStyleSheet("color: #ff4444; font-size: 26pt;")
-              
+
     def on_instrument_selected(self, name):
         if name == "-- SELECT INSTRUMENT --":
             self.btn_lock.setEnabled(False)
@@ -1515,8 +1656,8 @@ class MjolnirGUI(QWidget):
         self.lbl_ticker.set_custom_text(text, "#00ffff" if "READY" in text.upper() else "#888888")
 
     def reset_sl_warning(self):
-        # Återställ till standard orange text
-        self.lbl_hud_risk.setStyleSheet("color: #ffaa00; font-size: 14pt; font-weight: bold; font-family: Consolas; background-color: transparent;")
+        self._sl_warning_active = False
+        self.manager.update_ui_state()
 
     def blink_arm_warning(self):
         self._arm_warning_active = True
@@ -1547,11 +1688,11 @@ class MjolnirGUI(QWidget):
         self.manager.max_qty_reject_signal.connect(self.trigger_ammo_blink) # NYTT
 
     def blink_sl_warning(self):
-        # Visuell smäll på fingrarna!
-        self.lbl_hud_risk.setStyleSheet("color: #ffffff; font-size: 14pt; font-weight: bold; font-family: Consolas; background-color: #8b0000; border-radius: 4px;")
+        # Visuell smäll på fingrarna vid felaktig SL flytt!
+        self._sl_warning_active = True
+        self.lbl_trade_status.setStyleSheet("color: #ffffff; font-size: 32pt; font-weight: bold; font-family: Consolas; background-color: #8b0000; border-radius: 4px;")
         QTimer.singleShot(300, self.reset_sl_warning)
 
-    
     def setup_hotkeys(self):
         # Aktiverar the thread-safe global hotkeys
         self.global_hotkeys = GlobalHotkeyManager(self)
