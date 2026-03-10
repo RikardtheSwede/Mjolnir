@@ -1,5 +1,9 @@
 {
     "last_connection": "TWS PAPER (7497)",
-    "last_instrument": "MNQ",
-    "use_virtual_tp": true
+    "last_instrument": "BIT",
+    "use_virtual_tp": false,
+    "dom_scales": {
+        "MES": 80,
+        "MNQ": 70
+    }
 }

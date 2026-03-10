@@ -59,7 +59,6 @@ class MarqueeLabel(QLabel):
         display_text = self._full_text[self._scroll_pos:] + self._full_text[:self._scroll_pos]
         self.setText(display_text[:42])
 
-# NEW
 class TWSInspectorWindow(QWidget):
     """
     NEW: A standalone window to monitor orders detected on the IBKR server.
@@ -117,6 +116,165 @@ class TWSInspectorWindow(QWidget):
             self.warning_lbl.show()
         else:
             self.warning_lbl.hide()
+
+class DOMWidget(QWidget):
+    """Den rena grafikmotorn för prisstegen."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.center_price = 0.0 
+        self.current_price = 0.0 
+        self.bid_price, self.ask_price = 0.0, 0.0
+        self.bid_size, self.ask_size = 0, 0
+        self.min_tick = 0.25
+        self.pixels_per_point = 80  
+        self.setStyleSheet("background-color: #0d0d0d;")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        
+        painter.fillRect(0, 0, w, h, QColor("#0d0d0d"))
+        if self.center_price == 0.0: return
+        
+        center_y = h / 2
+        points_visible_half = (h / 2) / self.pixels_per_point
+        max_price = self.center_price + points_visible_half
+        min_price = self.center_price - points_visible_half
+        
+        start_price = math.ceil(min_price / self.min_tick) * self.min_tick
+        end_price = math.floor(max_price / self.min_tick) * self.min_tick
+        
+        painter.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        grid_pen = QPen(QColor("#1a1a1a"))
+        text_pen = QPen(QColor("#888888"))
+        
+        p = start_price
+        while p <= end_price + (self.min_tick / 2):
+            price_diff = p - self.center_price
+            y = int(center_y - (price_diff * self.pixels_per_point))
+            row_height = int(self.pixels_per_point * self.min_tick)
+            
+            # --- THE DANCING PRICE ---
+            is_current = abs(p - self.current_price) < (self.min_tick * 0.1)
+            is_bid = abs(p - self.bid_price) < (self.min_tick * 0.1)
+            is_ask = abs(p - self.ask_price) < (self.min_tick * 0.1)
+            
+            if is_current:
+                painter.fillRect(0, int(y - row_height/2), w, row_height, QColor("#004466"))
+            
+            painter.setPen(grid_pen)
+            painter.drawLine(0, y, w, y)
+            
+            # Textfärg Pris
+            if is_current: painter.setPen(QPen(QColor("#ffffff")))
+            elif p % 1.0 == 0: painter.setPen(QPen(QColor("#dddddd")))
+            else: painter.setPen(text_pen)
+                
+            price_str = f"{p:.2f}"
+            metrics = painter.fontMetrics()
+            tw = metrics.horizontalAdvance(price_str)
+            th = metrics.height()
+            
+            # Rita Priset i Mitten
+            painter.drawText(int((w - tw) / 2), y + int(th/3), price_str)
+            
+            # --- RITA BID/ASK VOLYM ---
+            if is_bid and self.bid_size > 0:
+                painter.setPen(QPen(QColor("#00ffcc"))) # Cyan för Köpare
+                painter.drawText(15, y + int(th/3), str(int(self.bid_size)))
+                
+            if is_ask and self.ask_size > 0:
+                painter.setPen(QPen(QColor("#ff4444"))) # Rött för Säljare
+                aw = metrics.horizontalAdvance(str(int(self.ask_size)))
+                painter.drawText(w - aw - 15, y + int(th/3), str(int(self.ask_size)))
+                
+            p += self.min_tick
+
+class MjolnirDOMWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Window)
+        self.setWindowTitle("MJÖLNIR MICRO-DOM")
+        self.resize(350, 800) 
+        self.setStyleSheet("background-color: #151515;")
+        self.manager = parent.manager if parent else None
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(5, 5, 5, 5); layout.setSpacing(5)
+        
+        self.header = QLabel("MICRO-DOM (STANDBY)")
+        self.header.setStyleSheet("color: #888; font-family: Consolas; font-weight: bold;")
+        self.header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.header)
+        
+        self.dom_widget = DOMWidget()
+        layout.addWidget(self.dom_widget, stretch=1)
+        
+        # Footer med Zoom och Synliga Punkter
+        footer_layout = QHBoxLayout()
+        lbl_scale = QLabel("ZOOM:")
+        lbl_scale.setStyleSheet("color: #666; font-family: Consolas; font-size: 8pt;")
+        
+        self.slider_scale = QSlider(Qt.Orientation.Horizontal)
+        self.slider_scale.setRange(20, 200) 
+        self.slider_scale.setValue(80)
+        self.slider_scale.valueChanged.connect(self.on_scale_changed)
+        
+        self.lbl_points = QLabel("PTS: --")
+        self.lbl_points.setStyleSheet("color: #555; font-family: Consolas; font-size: 8pt;")
+        
+        self.btn_center = QPushButton("CENTER")
+        self.btn_center.setFixedSize(60, 25)
+        self.btn_center.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-family: Consolas;")
+        self.btn_center.clicked.connect(self.recenter)
+        
+        footer_layout.addWidget(lbl_scale)
+        footer_layout.addWidget(self.slider_scale)
+        footer_layout.addWidget(self.lbl_points)
+        footer_layout.addStretch()
+        footer_layout.addWidget(self.btn_center)
+        layout.addLayout(footer_layout)
+        
+        self._auto_center = True
+        
+        # LOKAL HOTKEY: SPACEBAR (Triggas bara när fönstret är i fokus)
+        self.shortcut_center = QShortcut(QKeySequence("Space"), self)
+        self.shortcut_center.activated.connect(self.recenter)
+
+    def update_points_label(self):
+        if self.dom_widget.pixels_per_point > 0:
+            pts = self.dom_widget.height() / self.dom_widget.pixels_per_point
+            self.lbl_points.setText(f"SPAN: {pts:.1f} pts")
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_points_label()
+
+    def on_scale_changed(self, val):
+        self.dom_widget.pixels_per_point = val
+        self.update_points_label()
+        self.dom_widget.update()
+        
+    def recenter(self):
+        self._auto_center = True
+        self.update_dom({'price': self.manager.current_price if self.manager else 0.0}, self.dom_widget.min_tick)
+        
+    def update_dom(self, data, min_tick):
+        self.dom_widget.min_tick = min_tick
+        
+        current = data.get('price', 0.0)
+        self.dom_widget.current_price = current
+        self.dom_widget.bid_price = data.get('bid', 0.0)
+        self.dom_widget.ask_price = data.get('ask', 0.0)
+        self.dom_widget.bid_size = data.get('bid_size', 0)
+        self.dom_widget.ask_size = data.get('ask_size', 0)
+        
+        if self._auto_center and current > 0:
+            self.dom_widget.center_price = current
+            self._auto_center = False 
+            
+        self.dom_widget.update()
+
 
 # =============================================================================
 # CORE INTERFACES & SIGNALS
@@ -213,7 +371,17 @@ class IBKRProvider(ExecutionProvider):
             self.signals.status_msg.emit(f"Secure connection: {main_account}")
             return True
         except Exception as e:
-            self.signals.connection_confirmed.emit(False, str(e))
+            # NYTT: Bättre felhantering för att ge dig tydliga svar
+            error_str = str(e).lower()
+            friendly_err = "Unknown Error"
+            if not error_str or "timeout" in error_str:
+                friendly_err = f"Timeout on port {port}. API enabled in TWS?"
+            elif "refused" in error_str or "1225" in error_str:
+                friendly_err = f"Connection Refused on {port}. Is TWS/Gateway running?"
+            else:
+                friendly_err = str(e)
+                
+            self.signals.connection_confirmed.emit(False, friendly_err)
             return False
         
     def on_disconnect(self):
@@ -684,6 +852,16 @@ class SentinelManager(QObject):
         else:
             secured_pts = -self.sl_points
 
+
+
+        bid_p, ask_p, bid_s, ask_s = 0.0, 0.0, 0, 0
+        for p in self.providers:
+            if p.is_connected() and hasattr(p, 'mkt_data') and p.mkt_data:
+                bid_p = p.mkt_data.bid if p.mkt_data.bid and not math.isnan(p.mkt_data.bid) else 0.0
+                ask_p = p.mkt_data.ask if p.mkt_data.ask and not math.isnan(p.mkt_data.ask) else 0.0
+                bid_s = p.mkt_data.bidSize if p.mkt_data.bidSize and not math.isnan(p.mkt_data.bidSize) else 0
+                ask_s = p.mkt_data.askSize if p.mkt_data.askSize and not math.isnan(p.mkt_data.askSize) else 0
+
         data = {
             'pos': int(self.pos_qty), 'avg': self.avg_price, 'price': self.current_price,
             'pl': 0.0, 'tp_pts': self.tp_points, 'sl_pts': self.sl_points, 
@@ -700,7 +878,9 @@ class SentinelManager(QObject):
             'pending_sl': expected_sl,
             'sl_locked': getattr(self, 'sl_locked', False),
             'grace_remaining': getattr(self, 'grace_time_remaining', 0),
-            'secured_pts': secured_pts # NYTT: Data skickas till GUI
+            'secured_pts': secured_pts,
+            # NYTT: Skickar med orderbokens Top-of-book till GUI
+            'bid': bid_p, 'ask': ask_p, 'bid_size': bid_s, 'ask_size': ask_s 
         }
 
         if self.pos_qty != 0:
@@ -1112,12 +1292,17 @@ class MjolnirGUI(QWidget):
         self.btn_inspector = QPushButton("🔍 INSP"); self.btn_inspector.setFixedSize(70, 30)
         self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
         self.btn_inspector.clicked.connect(self.toggle_inspector)
+
+        # NYTT: DOM-knappen
+        self.btn_dom = QPushButton("📊 DOM"); self.btn_dom.setFixedSize(70, 30)
+        self.btn_dom.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
+        self.btn_dom.clicked.connect(self.toggle_dom)
         
         self.btn_arm = QPushButton("SAFE"); self.btn_arm.setCheckable(True); self.btn_arm.setFixedSize(80, 35)
         self.btn_arm.setStyleSheet("background-color: #222222; color: #444444; font-weight: bold; border-radius: 4px; border: 1px solid #444444;")
         self.btn_arm.clicked.connect(self.toggle_arm)
         
-        hud_top_layout.addWidget(self.btn_collapse); hud_top_layout.addWidget(self.lbl_ticker, stretch=1); hud_top_layout.addWidget(self.btn_inspector); hud_top_layout.addWidget(self.btn_arm)
+        hud_top_layout.addWidget(self.btn_collapse); hud_top_layout.addWidget(self.lbl_ticker, stretch=1); hud_top_layout.addWidget(self.btn_inspector); hud_top_layout.addWidget(self.btn_dom); hud_top_layout.addWidget(self.btn_arm)
         right_layout.addLayout(hud_top_layout)
 
         # ==========================================
@@ -1255,7 +1440,12 @@ class MjolnirGUI(QWidget):
         self.btn_close.clicked.connect(self.manager.execute_close)
         right_layout.addWidget(self.btn_close)
 
+        # (Längst ner i init_ui)
         self.inspector_window = TWSInspectorWindow(self)
+        self.dom_window = MjolnirDOMWindow(self) 
+        
+        self.shortcut_center_main = QShortcut(QKeySequence("Space"), self)
+        self.shortcut_center_main.activated.connect(self.dom_window.recenter)
 
         main_layout.addWidget(self.left_panel, stretch=1); main_layout.addLayout(right_layout, stretch=1); self.setLayout(main_layout)
 
@@ -1339,6 +1529,11 @@ class MjolnirGUI(QWidget):
         except: port = 7497
         
         self.theme_color = "#004466"
+        
+        # NYTT: Logga att vi börjar, och FORCERA uppritning innan tråden fryser!
+        self.update_log(f"SYSTEM: Attempting connection on port {port}...")
+        QApplication.processEvents() 
+        
         self.ib_provider.connect({'port': port})
 
     def on_connection_result(self, success, account_id):
@@ -1349,7 +1544,6 @@ class MjolnirGUI(QWidget):
             self.btn_connect.setStyleSheet(f"background-color: {self.theme_color}; color: #ffffff; font-size: 14pt; border-radius: 4px; border: 1px solid #0088aa;")
             
             self.combo_env.setEnabled(False)
-            # FIX: Vit text (#ffffff) istället för grå, behåller krispigheten i texten!
             self.combo_env.setStyleSheet(f"QComboBox:disabled {{ background-color: {self.theme_color}; color: #ffffff; font-weight: bold; padding-left: 10px; border-radius: 4px; border: 1px solid #0088aa; }} QComboBox::drop-down {{ border: none; width: 25px; }}")
             
             self.combo_symbol.setEnabled(True)
@@ -1362,7 +1556,9 @@ class MjolnirGUI(QWidget):
                 self.btn_lock.setStyleSheet("background-color: #333333; color: #ffffff; font-size: 14pt; border-radius: 4px; border: 1px solid #555555;")
         else:
             self.reset_connection_ui()
-
+            # NYTT: Om det misslyckas, skriv ut varför
+            self.update_log(f"❌ CONNECTION FAILED: {account_id}")
+            
     def toggle_lock(self):
         if self.btn_lock.text() == "🔓":
             name = self.combo_symbol.currentText()
@@ -1415,7 +1611,10 @@ class MjolnirGUI(QWidget):
             self.btn_arm.setStyleSheet(f"background-color: {self.theme_color}; color: white; font-weight: bold;")
         else:
             self.btn_arm.setStyleSheet("background-color: #222; color: white; font-weight: bold; border: 1px solid #444;")
-            
+            if self.active_instrument_name:
+                if not hasattr(self, 'dom_scales'): self.dom_scales = {}
+                self.dom_scales[self.active_instrument_name] = self.dom_window.slider_scale.value()
+
         self.manager.update_ui_state()
 
     def update_hud(self, data):
@@ -1611,6 +1810,11 @@ class MjolnirGUI(QWidget):
             data.get('other_activity', []), 
             data.get('multi_sl_warning', False)
         )
+        # NYTT: Håll DOM:en vid liv med all data (Top of book)
+        if self.dom_window.isVisible():
+            self.dom_window.update_dom(data, self.manager.min_tick)
+            if self.active_instrument_name:
+                self.dom_window.header.setText(f"MICRO-DOM ({self.active_instrument_name})")
 
     def on_instrument_selected(self, name):
         if name == "-- SELECT INSTRUMENT --":
@@ -1618,7 +1822,12 @@ class MjolnirGUI(QWidget):
             self.btn_lock.setText("🔒")
             self.btn_lock.setStyleSheet("background-color: #222222; color: #666666; font-size: 14pt; border-radius: 4px; border: 1px solid #333333;")
             return
-            
+
+        # Ladda sparad DOM-skala för detta instrument
+        if hasattr(self, 'dom_scales'):
+            saved_scale = self.dom_scales.get(name, 80)
+            self.dom_window.slider_scale.setValue(saved_scale)
+          
         if self.ib_provider.is_connected():
             self.btn_lock.setEnabled(True)
             self.btn_lock.setText("🔓")
@@ -1635,6 +1844,12 @@ class MjolnirGUI(QWidget):
             self.inspector_window.hide()
         else:
             self.inspector_window.show()
+
+    def toggle_dom(self):
+        if self.dom_window.isVisible():
+            self.dom_window.hide()
+        else:
+            self.dom_window.show()
 
     def update_log(self, text):
         log_str = f"[{time.strftime('%H:%M:%S')}] {text}"
@@ -1680,12 +1895,14 @@ class MjolnirGUI(QWidget):
 
 
     def setup_connections(self):
-        self.manager.log_signal.connect(self.update_log); self.manager.ui_update.connect(self.update_hud)
+        self.manager.log_signal.connect(self.update_log)
+        self.manager.ui_update.connect(self.update_hud)
         self.manager.connection_status.connect(self.on_connection_result)
+        self.manager.connection_lost_signal.connect(self.handle_connection_lost) # <--- HÄR ÄR DEN SAKNADE SLADDEN!
         self.manager.sl_reject_signal.connect(self.blink_sl_warning)
         self.manager.arm_reject_signal.connect(self.blink_arm_warning)
         self.manager.cooldown_reject_signal.connect(self.blink_cooldown_warning)
-        self.manager.max_qty_reject_signal.connect(self.trigger_ammo_blink) # NYTT
+        self.manager.max_qty_reject_signal.connect(self.trigger_ammo_blink)
 
     def blink_sl_warning(self):
         # Visuell smäll på fingrarna vid felaktig SL flytt!
@@ -1715,10 +1932,15 @@ class MjolnirGUI(QWidget):
             self._is_manual_disconnect = False
             # Behöver inte göra något, reset_connection_ui har redan körts
         else:
-            # Om det var en krasch eller fel
+            # Om det var en krasch eller TWS stängdes ner oväntat
+            self.update_log("🚨 CRITICAL: CONNECTION TO TWS LOST! SYSTEM DISARMED.")
+            self.btn_arm.setChecked(False) # Klicka ur knappen visuellt
             self.btn_arm.setEnabled(False)
             self.btn_connect.setText("⚠")
             self.alarm_timer.start(500)
+            
+        # Forcera en UI-uppdatering så The Vertical HUD går från Marinblå till Grå direkt
+        self.manager.update_ui_state()
 
     def blink_connection_alarm(self):
         self.alarm_state = not getattr(self, 'alarm_state', False)
@@ -1729,6 +1951,7 @@ class MjolnirGUI(QWidget):
 
     def load_settings(self):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+        self.dom_scales = {} # NYTT: Håller koll på skalorna
         if os.path.exists(path):
             try:
                 with open(path, 'r') as f:
@@ -1739,6 +1962,7 @@ class MjolnirGUI(QWidget):
                     if idx >= 0: self.combo_symbol.setCurrentIndex(idx)
                     if s.get("use_virtual_tp", False):
                         self.chk_virtual_tp.setChecked(True)
+                    self.dom_scales = s.get("dom_scales", {}) # Laddar in sparade skalor
             except: pass
 
     def save_settings(self):
@@ -1748,7 +1972,8 @@ class MjolnirGUI(QWidget):
                 json.dump({
                     "last_connection": self.combo_env.currentText(), 
                     "last_instrument": self.combo_symbol.currentText(),
-                    "use_virtual_tp": self.chk_virtual_tp.isChecked()
+                    "use_virtual_tp": self.chk_virtual_tp.isChecked(),
+                    "dom_scales": getattr(self, 'dom_scales', {}) # Sparar skalorna till fil
                 }, f, indent=4)
         except: pass
 
