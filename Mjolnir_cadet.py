@@ -145,47 +145,86 @@ class DOMWidget(QWidget):
         start_price = math.ceil(min_price / self.min_tick) * self.min_tick
         end_price = math.floor(max_price / self.min_tick) * self.min_tick
         
-        painter.setFont(QFont("Consolas", 10, QFont.Weight.Bold))
+        # --- FONT SELECTION (Dynamisk storlek) ---
+        if self.pixels_per_point < 18:
+            painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold)) 
+        else:
+            painter.setFont(QFont("Consolas", 10, QFont.Weight.Bold)) 
+            
         grid_pen = QPen(QColor("#1a1a1a"))
+        grid_pen_strong = QPen(QColor("#2a2a2a")) 
         text_pen = QPen(QColor("#888888"))
+        
+        metrics = painter.fontMetrics()
+        th = metrics.height() 
         
         p = start_price
         while p <= end_price + (self.min_tick / 2):
             price_diff = p - self.center_price
             y = int(center_y - (price_diff * self.pixels_per_point))
-            row_height = int(self.pixels_per_point * self.min_tick)
             
-            # --- THE DANCING PRICE ---
+            row_height = self.pixels_per_point * self.min_tick
+            point_height = self.pixels_per_point
+            
             is_current = abs(p - self.current_price) < (self.min_tick * 0.1)
             is_bid = abs(p - self.bid_price) < (self.min_tick * 0.1)
             is_ask = abs(p - self.ask_price) < (self.min_tick * 0.1)
             
+            # --- 1. THE DANCING PRICE (Background) ---
             if is_current:
-                painter.fillRect(0, int(y - row_height/2), w, row_height, QColor("#004466"))
+                box_h = max(row_height, th + 4) 
+                painter.fillRect(0, int(y - box_h/2), w, int(box_h), QColor("#004466"))
             
-            painter.setPen(grid_pen)
-            painter.drawLine(0, y, w, y)
+            # --- 2. GRID THINNING (Tuffare krav på whitespace för linjer) ---
+            should_draw_line = False
+            current_pen = grid_pen
             
-            # Textfärg Pris
-            if is_current: painter.setPen(QPen(QColor("#ffffff")))
-            elif p % 1.0 == 0: painter.setPen(QPen(QColor("#dddddd")))
-            else: painter.setPen(text_pen)
+            if row_height >= 6: 
+                should_draw_line = True 
+            elif point_height >= 8:
+                if p % 1.0 == 0: 
+                    should_draw_line = True 
+                    current_pen = grid_pen_strong
+            else:
+                if p % 5.0 == 0:
+                    should_draw_line = True 
+                    current_pen = grid_pen_strong
+            
+            if should_draw_line or is_current:
+                painter.setPen(current_pen)
+                painter.drawLine(0, y, w, y)
+            
+            # --- 3. DYNAMIC TEXT THINNING (Låter logiken styra allt) ---
+            should_draw_text = False
+            
+            if row_height >= th * 1.2: 
+                # Gott om plats: Rita alla ticks (XX.25)
+                should_draw_text = True 
+            elif point_height >= th * 1.5:
+                # Behöver minst 1.5x font-höjden i luft för att rita varje hel poäng (XX.00)
+                if p % 1.0 == 0: should_draw_text = True 
+            elif point_height * 5 >= th * 1.2:
+                # Annars hoppar vi direkt till var 5:e poäng
+                if p % 5.0 == 0: should_draw_text = True
+            else:
+                # Max utzoom: Var 10:e poäng
+                if p % 10.0 == 0: should_draw_text = True 
                 
-            price_str = f"{p:.2f}"
-            metrics = painter.fontMetrics()
-            tw = metrics.horizontalAdvance(price_str)
-            th = metrics.height()
+            if should_draw_text:
+                if p % 1.0 == 0: painter.setPen(QPen(QColor("#dddddd")))
+                else: painter.setPen(text_pen)
+                    
+                price_str = f"{p:.2f}"
+                tw = metrics.horizontalAdvance(price_str)
+                painter.drawText(int((w - tw) / 2), y + int(th/3), price_str)
             
-            # Rita Priset i Mitten
-            painter.drawText(int((w - tw) / 2), y + int(th/3), price_str)
-            
-            # --- RITA BID/ASK VOLYM ---
+            # --- 4. RITA BID/ASK VOLYM ---
             if is_bid and self.bid_size > 0:
-                painter.setPen(QPen(QColor("#00ffcc"))) # Cyan för Köpare
+                painter.setPen(QPen(QColor("#00ffcc"))) 
                 painter.drawText(15, y + int(th/3), str(int(self.bid_size)))
                 
             if is_ask and self.ask_size > 0:
-                painter.setPen(QPen(QColor("#ff4444"))) # Rött för Säljare
+                painter.setPen(QPen(QColor("#ff4444"))) 
                 aw = metrics.horizontalAdvance(str(int(self.ask_size)))
                 painter.drawText(w - aw - 15, y + int(th/3), str(int(self.ask_size)))
                 
@@ -216,7 +255,8 @@ class MjolnirDOMWindow(QWidget):
         lbl_scale.setStyleSheet("color: #666; font-family: Consolas; font-size: 8pt;")
         
         self.slider_scale = QSlider(Qt.Orientation.Horizontal)
-        self.slider_scale.setRange(20, 200) 
+        # GUARD RAILS: Låser zoomen mellan 30 och 150 px/poäng för att skydda grafiken
+        self.slider_scale.setRange(8, 80) 
         self.slider_scale.setValue(80)
         self.slider_scale.valueChanged.connect(self.on_scale_changed)
         
@@ -275,6 +315,26 @@ class MjolnirDOMWindow(QWidget):
             
         self.dom_widget.update()
 
+    # --- THE PRO FLOW: Musens scrollhjul ---
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if delta == 0: return
+
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            # ZOOM: Ctrl + Scrollhjul
+            step = 5 if delta > 0 else -5
+            new_val = self.slider_scale.value() + step
+            self.slider_scale.setValue(new_val) # Setter kallas automatiskt, clamping sker i setRange
+        else:
+            # PANORERING: Vanlig scroll flyttar stegen
+            self._auto_center = False # Lås stegen direkt så den inte hoppar tillbaka
+            
+            # (delta är ofta +-120). 4 ticks motsvarar exakt 1.0 poäng för MNQ.
+            points_to_move = (delta / 120.0) * (self.dom_widget.min_tick * 4) 
+            
+            if self.dom_widget.center_price > 0:
+                self.dom_widget.center_price += points_to_move
+                self.dom_widget.update()
 
 # =============================================================================
 # CORE INTERFACES & SIGNALS
@@ -1270,6 +1330,31 @@ class MjolnirGUI(QWidget):
         self.chk_virtual_tp.stateChanged.connect(self.on_virtual_tp_changed)
         left_layout.addWidget(self.chk_virtual_tp)
 
+        tools_layout = QHBoxLayout()
+        tools_layout.setSpacing(5)
+        
+        self.btn_inspector = QPushButton("🔍 INSP")
+        self.btn_inspector.setFixedSize(65, 25)
+        self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
+        self.btn_inspector.clicked.connect(self.toggle_inspector)
+
+        self.btn_dom = QPushButton("📊 DOM")
+        self.btn_dom.setFixedSize(65, 25)
+        self.btn_dom.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
+        self.btn_dom.clicked.connect(self.toggle_dom)
+
+        self.dom_height_preset = 800 
+        self.btn_dom_height = QPushButton(f"↕ {self.dom_height_preset}px")
+        self.btn_dom_height.setFixedSize(85, 25)
+        self.btn_dom_height.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-family: Consolas; font-size: 8pt; border-radius: 4px;")
+        self.btn_dom_height.clicked.connect(self.cycle_dom_height)
+        
+        tools_layout.addWidget(self.btn_inspector)
+        tools_layout.addWidget(self.btn_dom)
+        tools_layout.addWidget(self.btn_dom_height)
+        left_layout.addLayout(tools_layout)
+        
+
         lbl_log_title = QLabel("SYSTEM LOG")
         lbl_log_title.setStyleSheet("color: #666; font-size: 8pt; font-weight: bold;")
         left_layout.addWidget(lbl_log_title)
@@ -1284,26 +1369,20 @@ class MjolnirGUI(QWidget):
         # --- RIGHT COLUMN (TACTICAL HUD) ---
         right_layout = QVBoxLayout(); right_layout.setSpacing(10)
 
-        # Header: Ticker + Inspector + Master Arm
+        # Header: Ticker + Master Arm
         hud_top_layout = QHBoxLayout()
         self.btn_collapse = QPushButton("◀"); self.btn_collapse.setFixedSize(30, 30); self.btn_collapse.clicked.connect(self.toggle_panel)
         self.lbl_ticker = MarqueeLabel(); self.lbl_ticker.set_custom_text("SYSTEM STANDBY", "#888888")
-        
-        self.btn_inspector = QPushButton("🔍 INSP"); self.btn_inspector.setFixedSize(70, 30)
-        self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
-        self.btn_inspector.clicked.connect(self.toggle_inspector)
-
-        # NYTT: DOM-knappen
-        self.btn_dom = QPushButton("📊 DOM"); self.btn_dom.setFixedSize(70, 30)
-        self.btn_dom.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
-        self.btn_dom.clicked.connect(self.toggle_dom)
         
         self.btn_arm = QPushButton("SAFE"); self.btn_arm.setCheckable(True); self.btn_arm.setFixedSize(80, 35)
         self.btn_arm.setStyleSheet("background-color: #222222; color: #444444; font-weight: bold; border-radius: 4px; border: 1px solid #444444;")
         self.btn_arm.clicked.connect(self.toggle_arm)
         
-        hud_top_layout.addWidget(self.btn_collapse); hud_top_layout.addWidget(self.lbl_ticker, stretch=1); hud_top_layout.addWidget(self.btn_inspector); hud_top_layout.addWidget(self.btn_dom); hud_top_layout.addWidget(self.btn_arm)
+        hud_top_layout.addWidget(self.btn_collapse)
+        hud_top_layout.addWidget(self.lbl_ticker, stretch=1)
+        hud_top_layout.addWidget(self.btn_arm)
         right_layout.addLayout(hud_top_layout)
+
 
         # ==========================================
         # THE VERTICAL TACTICAL HUD
@@ -1851,6 +1930,25 @@ class MjolnirGUI(QWidget):
         else:
             self.dom_window.show()
 
+    def cycle_dom_height(self):
+        heights = [800, 1080, 1440, 1800]
+        current = getattr(self, 'dom_height_preset', 800)
+        
+        if current in heights:
+            idx = (heights.index(current) + 1) % len(heights)
+        else:
+            idx = 0
+            
+        self.dom_height_preset = heights[idx]
+        self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
+        
+        # Ändra fönstrets höjd omedelbart om det är skapat
+        if hasattr(self, 'dom_window'):
+            # Behåll nuvarande bredd, uppdatera bara höjden
+            current_width = self.dom_window.width()
+            self.dom_window.resize(current_width, self.dom_height_preset)
+
+
     def update_log(self, text):
         log_str = f"[{time.strftime('%H:%M:%S')}] {text}"
         
@@ -1951,7 +2049,7 @@ class MjolnirGUI(QWidget):
 
     def load_settings(self):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
-        self.dom_scales = {} # NYTT: Håller koll på skalorna
+        self.dom_scales = {} 
         if os.path.exists(path):
             try:
                 with open(path, 'r') as f:
@@ -1962,7 +2060,15 @@ class MjolnirGUI(QWidget):
                     if idx >= 0: self.combo_symbol.setCurrentIndex(idx)
                     if s.get("use_virtual_tp", False):
                         self.chk_virtual_tp.setChecked(True)
-                    self.dom_scales = s.get("dom_scales", {}) # Laddar in sparade skalor
+                    self.dom_scales = s.get("dom_scales", {}) 
+                    
+            
+                    self.dom_height_preset = s.get("dom_height", 800)
+                    if hasattr(self, 'btn_dom_height'):
+                        self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
+                    if hasattr(self, 'dom_window'):
+                        self.dom_window.resize(350, self.dom_height_preset)
+                        
             except: pass
 
     def save_settings(self):
@@ -1973,7 +2079,8 @@ class MjolnirGUI(QWidget):
                     "last_connection": self.combo_env.currentText(), 
                     "last_instrument": self.combo_symbol.currentText(),
                     "use_virtual_tp": self.chk_virtual_tp.isChecked(),
-                    "dom_scales": getattr(self, 'dom_scales', {}) # Sparar skalorna till fil
+                    "dom_scales": getattr(self, 'dom_scales', {}),
+                    "dom_height": getattr(self, 'dom_height_preset', 800) # NYTT: Sparar höjden
                 }, f, indent=4)
         except: pass
 
