@@ -117,9 +117,15 @@ class TWSInspectorWindow(QWidget):
         else:
             self.warning_lbl.hide()
 
-# REPLACE
 class DOMWidget(QWidget):
     """The core graphics engine for the Price Ladder - Pro Jigsaw Layout."""
+    
+    # Nya DOM-signaler
+    sig_dom_place_order = pyqtSignal(str, str, float) # action, order_type, price
+    sig_dom_modify_qty = pyqtSignal(str, float)       # action, price
+    sig_dom_move_order = pyqtSignal(str, float)       # order_ref, price
+    sig_dom_cancel_order = pyqtSignal(str, float)     # target, price
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.center_price = 0.0 
@@ -152,36 +158,111 @@ class DOMWidget(QWidget):
         if self.center_price == 0.0: return
         
         x, y = event.pos().x(), event.pos().y()
-        if y <= 24: return 
+        if y <= 24: return # Ignorera header
         
         w, h = self.width(), self.height()
         
+        # Dimensioner (måste matcha paintEvent)
+        col_price_w = 80
+        col_bids_w = 40
+        col_asks_w = 40
+        col_buys_w = 60  
+        col_sells_w = 60 
         col_levels_w = 65 
+        
+        center_x = w / 2
+        x_price = center_x - (col_price_w / 2)
+        x_buys = x_price - col_buys_w
+        x_sells = x_price + col_price_w
         x_levels = w - col_levels_w
         
+        center_y = h / 2
+        price_diff = (center_y - y) / self.pixels_per_point
+        raw_price = self.center_price + price_diff
+        clicked_price = round(round(raw_price / self.min_tick) * self.min_tick, 4)
+
+        # 1. Klick i Level-kolumnen (Violetta streck, fungerar i SAFE mode)
         if x_levels <= x <= w:
-            center_y = h / 2
-            price_diff = (center_y - y) / self.pixels_per_point
-            raw_price = self.center_price + price_diff
-            clicked_price = round(round(raw_price / self.min_tick) * self.min_tick, 4)
-            
-            tolerance = 2.0
-            level_to_remove = None
-            
-            for lvl in self.manual_levels:
-                if abs(lvl - clicked_price) <= (tolerance + 1e-9):
-                    level_to_remove = lvl
-                    break
-                    
-            if level_to_remove is not None:
-                self.manual_levels.remove(level_to_remove)
-            else:
-                self.manual_levels.add(clicked_price)
-                
-            self.update()
+            if event.button() == Qt.MouseButton.LeftButton:
+                tolerance = 2.0
+                level_to_remove = None
+                for lvl in self.manual_levels:
+                    if abs(lvl - clicked_price) <= (tolerance + 1e-9):
+                        level_to_remove = lvl
+                        break
+                if level_to_remove is not None:
+                    self.manual_levels.remove(level_to_remove)
+                else:
+                    self.manual_levels.add(clicked_price)
+                self.update()
+            return
 
+        # ==========================================
+        # THE TACTICAL DOM MATRIX (Kräver ARMED)
+        # ==========================================
+        if not self.is_armed: return
 
-    # MODIFIED
+        # Identifiera tillstånd för att definiera Action vs Protection
+        is_long = self.pos_qty > 0 or (self.pos_qty == 0 and self.pending_anchor > 0 and self.pending_direction == 1)
+        is_short = self.pos_qty < 0 or (self.pos_qty == 0 and self.pending_anchor > 0 and self.pending_direction == -1)
+        is_flat = not is_long and not is_short
+
+        # 2. Klick i BUY-kolumnen
+        if x_buys <= x < x_price:
+            is_protection = is_short
+            is_action = is_long or is_flat
+
+            if event.button() == Qt.MouseButton.LeftButton:
+                if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                    if is_protection:
+                        self.sig_dom_move_order.emit('TP', clicked_price)
+                else:
+                    if is_protection:
+                        self.sig_dom_move_order.emit('SL', clicked_price)
+                    elif is_action:
+                        if clicked_price in self.my_buys or clicked_price in self.my_stop_buys:
+                            self.sig_dom_modify_qty.emit('BUY', clicked_price) # Add Size
+                        else:
+                            # Momentum Stop vs Value Limit
+                            order_type = 'STP' if clicked_price > self.current_price else 'LMT'
+                            self.sig_dom_place_order.emit('BUY', order_type, clicked_price)
+                            
+            elif event.button() == Qt.MouseButton.RightButton:
+                if is_protection:
+                    if clicked_price in self.my_buys: # TP för en short ligger som BUY limit
+                        self.sig_dom_cancel_order.emit('TP', clicked_price)
+                elif is_action:
+                    if clicked_price in self.my_buys or clicked_price in self.my_stop_buys:
+                        self.sig_dom_cancel_order.emit('ENTRY', clicked_price)
+
+        # 3. Klick i SELL-kolumnen
+        elif x_sells <= x < x_sells + col_sells_w:
+            is_protection = is_long
+            is_action = is_short or is_flat
+
+            if event.button() == Qt.MouseButton.LeftButton:
+                if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+                    if is_protection:
+                        self.sig_dom_move_order.emit('TP', clicked_price)
+                else:
+                    if is_protection:
+                        self.sig_dom_move_order.emit('SL', clicked_price)
+                    elif is_action:
+                        if clicked_price in self.my_sells or clicked_price in self.my_stop_sells:
+                            self.sig_dom_modify_qty.emit('SELL', clicked_price) # Add Size
+                        else:
+                            # Momentum Stop vs Value Limit
+                            order_type = 'STP' if clicked_price < self.current_price else 'LMT'
+                            self.sig_dom_place_order.emit('SELL', order_type, clicked_price)
+                            
+            elif event.button() == Qt.MouseButton.RightButton:
+                if is_protection:
+                    if clicked_price in self.my_sells: # TP för en long ligger som SELL limit
+                        self.sig_dom_cancel_order.emit('TP', clicked_price)
+                elif is_action:
+                    if clicked_price in self.my_sells or clicked_price in self.my_stop_sells:
+                        self.sig_dom_cancel_order.emit('ENTRY', clicked_price)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -192,7 +273,6 @@ class DOMWidget(QWidget):
         if self.center_price == 0.0: return
         
         center_x = w / 2
-        # Nya proportioner och ordning: BID | BUY | PRICE | SEL | ASK | LVL
         col_price_w = 80
         col_bids_w = 40
         col_asks_w = 40
@@ -243,7 +323,6 @@ class DOMWidget(QWidget):
         metrics = painter.fontMetrics()
         th = metrics.height() 
 
-        # --- EXTENDED PNL ZONE & BREAK-EVEN LINE ---
         if self.pos_qty != 0 and self.avg_price > 0 and self.current_price > 0:
             y_avg = int(center_y - ((self.avg_price - self.center_price) * self.pixels_per_point))
             y_curr = int(center_y - ((self.current_price - self.center_price) * self.pixels_per_point))
@@ -264,7 +343,6 @@ class DOMWidget(QWidget):
             painter.setPen(QPen(QColor("#ffffff"), 2))
             painter.drawLine(zone_x, y_avg, zone_x + zone_w, y_avg)
         
-        # Determine anchor for the point scale
         anchor_price = self.avg_price if self.pos_qty != 0 else self.pending_anchor
         direction = 1 if self.pos_qty > 0 else (-1 if self.pos_qty < 0 else self.pending_direction)
         scale_anchor = round(anchor_price / self.min_tick) * self.min_tick if anchor_price > 0 else 0.0
@@ -289,11 +367,9 @@ class DOMWidget(QWidget):
             box_y = int(y - max(row_height, th + 4)/2)
             box_h = int(max(row_height, th + 4))
             
-            # Extended Current Price Highlight
             if is_current:
                 painter.fillRect(int(x_buys), box_y, int(col_buys_w + col_price_w + col_sells_w), box_h, QColor("#00334d"))
                 
-            # Draw Grid Lines
             should_draw_line = False
             current_pen = grid_pen
             if row_height >= 6: should_draw_line = True 
@@ -306,7 +382,6 @@ class DOMWidget(QWidget):
                 painter.setPen(current_pen)
                 painter.drawLine(0, y, w, y)
                 
-            # Draw Level Overlays
             if p_round in self.manual_levels:
                 dash_pen = QPen(QColor("#b388ff")) 
                 dash_pen.setStyle(Qt.PenStyle.DashLine)
@@ -320,7 +395,6 @@ class DOMWidget(QWidget):
                 lw = metrics.horizontalAdvance("M")
                 painter.drawText(int(x_levels + (col_levels_w - lw)/2), y + int(th/3), "M")
             
-            # Price Text
             should_draw_text = False
             if row_height >= th * 1.2: should_draw_text = True 
             elif point_height >= th * 1.5:
@@ -332,7 +406,6 @@ class DOMWidget(QWidget):
                 
             if should_draw_text:
                 if is_current:
-                    # KIRURGISK ÄNDRING: Här byter vi till en skarp cyan för aktuellt pris
                     painter.setPen(QPen(QColor("#00ffff"))) 
                 elif p % 1.0 == 0: 
                     painter.setPen(QPen(QColor("#dddddd")))
@@ -343,7 +416,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(price_str)
                 painter.drawText(int(center_x - (tw / 2)), y + int(th/3), price_str)
 
-            # --- DYNAMIC PNL POINT LADDER ---
             if scale_anchor > 0.0 and should_draw_text:
                 pts = (p_round - scale_anchor) * direction
                 pts_str = f"{pts:+.2f}" if pts != 0 else " 0.00"
@@ -357,7 +429,6 @@ class DOMWidget(QWidget):
                 elif direction == -1: # Short
                     painter.drawText(int(x_sells + (col_sells_w - pw)/2), y + int(th/3), pts_str)
             
-            # Market Liquidity
             if is_bid and self.bid_size > 0:
                 painter.setPen(QPen(QColor("#00ffcc"))) 
                 bw = metrics.horizontalAdvance(str(int(self.bid_size)))
@@ -368,11 +439,6 @@ class DOMWidget(QWidget):
                 aw = metrics.horizontalAdvance(str(int(self.ask_size)))
                 painter.drawText(int(x_asks + (col_asks_w - aw)/2), y + int(th/3), str(int(self.ask_size)))
 
-            # ========================================================
-            # THE NEW ORDER RENDERING HIERARCHY
-            # ========================================================
-
-            # A. LIMIT ORDERS
             if p_round in self.my_buys:
                 b_qty = str(self.my_buys[p_round])
                 painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#0088cc")) 
@@ -387,7 +453,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(s_qty)
                 painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), s_qty)
 
-            # B. STOP LOSS ORDERS
             if p_round in self.my_stop_buys:
                 qty_str = f"SL {self.my_stop_buys[p_round]}"
                 painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#002233"))
@@ -406,7 +471,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(qty_str)
                 painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
 
-            # C. GHOST SL ORDER
             if is_pending_sl:
                 qty_str = f"SL {max(1, abs(self.pos_qty))}"
                 painter.setPen(QPen(QColor("#888888"), 1, Qt.PenStyle.DashLine))
@@ -423,7 +487,6 @@ class DOMWidget(QWidget):
                     tw = metrics.horizontalAdvance(qty_str)
                     painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
 
-            # D. OPEN POSITION AVERAGE PRICE
             if is_avg_price:
                 pos_str = f"POS {abs(self.pos_qty)}"
                 if self.pos_qty > 0:
@@ -439,7 +502,6 @@ class DOMWidget(QWidget):
                 
             p += self.min_tick
 
-        # --- STICKY HEADERS ---
         header_h = 24
         header_bg = QColor("#004466") if self.is_armed else QColor(20, 20, 20, 255)
         painter.fillRect(0, 0, w, header_h, header_bg) 
@@ -460,7 +522,6 @@ class DOMWidget(QWidget):
         
         painter.setPen(QPen(QColor("#444444") if not self.is_armed else QColor("#0088aa")))
         painter.drawLine(0, header_h, w, header_h)
-
 
 class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
@@ -484,6 +545,13 @@ class MjolnirDOMWindow(QWidget):
         
         self.dom_widget = DOMWidget()
         layout.addWidget(self.dom_widget, stretch=1)
+
+        # Koppla signalerna till Väktarens hjärna
+        if self.manager:
+            self.dom_widget.sig_dom_place_order.connect(self.manager.handle_dom_place_order)
+            self.dom_widget.sig_dom_modify_qty.connect(self.manager.handle_dom_modify_qty)
+            self.dom_widget.sig_dom_move_order.connect(self.manager.move_order_to_price)
+            self.dom_widget.sig_dom_cancel_order.connect(self.manager.cancel_dom_order)
         
         footer_layout = QHBoxLayout()
         footer_layout.setContentsMargins(0, 5, 0, 0)
@@ -586,7 +654,6 @@ class MjolnirDOMWindow(QWidget):
             
         self.dom_widget.avg_price = round(display_avg, 4)
         
-        # Mata in Pending Anchor och riktning för PnL-stegen
         self.dom_widget.pending_anchor = data.get('pending_entry', 0.0)
         self.dom_widget.pending_direction = data.get('display_direction', 1)
         
@@ -648,15 +715,15 @@ class ExecutionProvider(ABC):
     @abstractmethod
     def cancel_order(self, order_ref: str): pass
     @abstractmethod
-    def place_bracket(self, action: str, qty: int, lmt_price: float, tp_price: float, sl_price: float): pass
+    def place_bracket(self, action: str, qty: int, lmt_price: float, tp_price: float, sl_price: float, entry_type: str = 'LMT'): pass
     @abstractmethod
-    def place_single_order(self, action: str, qty: int, price: float, order_ref: str): pass
+    def place_single_order(self, action: str, qty: int, price: float, order_ref: str, order_type: str = 'LMT'): pass
     @abstractmethod
     def cancel_all(self): pass
     @abstractmethod
     def modify_order(self, order_ref: str, new_price: float, new_qty: Optional[int] = None): pass
     @abstractmethod
-    def cancel_order_by_id(self, order_id: int): pass # NY RAD
+    def cancel_order_by_id(self, order_id: int): pass
     @abstractmethod
     def get_order_price(self, order_ref: str) -> Optional[float]: pass
     @abstractmethod
@@ -715,7 +782,6 @@ class IBKRProvider(ExecutionProvider):
             self.signals.status_msg.emit(f"Secure connection: {main_account}")
             return True
         except Exception as e:
-            # NYTT: Bättre felhantering för att ge dig tydliga svar
             error_str = str(e).lower()
             friendly_err = "Unknown Error"
             if not error_str or "timeout" in error_str:
@@ -769,10 +835,16 @@ class IBKRProvider(ExecutionProvider):
             if pos.contract.conId == self.contract.conId: self.on_position(pos)
         self.signals.status_msg.emit(f"READY: {self.contract.localSymbol}")
 
-    def place_bracket(self, action: str, qty: int, lmt_price: float, tp_price: float, sl_price: float):
+    def place_bracket(self, action: str, qty: int, lmt_price: float, tp_price: float, sl_price: float, entry_type: str = 'LMT'):
         if not self.contract or not self.is_connected(): return
         bracket = self.ib.bracketOrder(action, qty, lmt_price, lmt_price, sl_price)
         entry, sl = bracket[0], bracket[2]
+        
+        if entry_type == 'STP':
+            entry.orderType = 'STP'
+            entry.auxPrice = lmt_price
+            entry.lmtPrice = 0.0
+            
         entry.orderRef, sl.orderRef = "ENTRY", "SL"
         entry.tif = sl.tif = 'GTC'
         entry.outsideRth = sl.outsideRth = True
@@ -781,13 +853,18 @@ class IBKRProvider(ExecutionProvider):
         sl.transmit = True 
         self.ib.placeOrder(self.contract, entry)
         self.ib.placeOrder(self.contract, sl)
-        self.signals.status_msg.emit(f"SENT: {action} {qty} (Bracket Active)")
+        self.signals.status_msg.emit(f"SENT: {action} {qty} ({entry_type} Bracket Active)")
 
-    def place_single_order(self, action: str, qty: int, price: float, order_ref: str):
+    def place_single_order(self, action: str, qty: int, price: float, order_ref: str, order_type: str = 'LMT'):
         if not self.contract or not self.is_connected(): return
-        order = LimitOrder(action, qty, price, outsideRth=True, tif='GTC')
+        
+        if order_type == 'STP':
+            order = StopOrder(action, qty, price, outsideRth=True, tif='GTC')
+        else:
+            order = LimitOrder(action, qty, price, outsideRth=True, tif='GTC')
+            order.usePriceMgmtAlgo = True
+            
         order.orderRef = order_ref
-        order.usePriceMgmtAlgo = True
         order.transmit = True  
         self.ib.placeOrder(self.contract, order)
 
@@ -796,19 +873,16 @@ class IBKRProvider(ExecutionProvider):
         count = 0
         for t in self.ib.openTrades():
             if t.contract.conId == self.contract.conId:
-                # Vi ignorerar ordrar som redan är klara eller håller på att avbrytas ('PendingCancel')
                 if t.orderStatus.status not in ['Cancelled', 'Filled', 'Inactive', 'ApiCancelled', 'PendingCancel']:
                     self.ib.cancelOrder(t.order)
                     count += 1
                     
         if count > 0: self.signals.status_msg.emit(f"CLEANUP: {count} active/pending orders erased.")
 
-
     def get_active_order_count(self) -> int:
         if not self.contract or not self.is_connected(): return 0
         return len([t for t in self.ib.openTrades() if t.contract.conId == self.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates])
 
-    # REPLACE
     def get_order_price(self, order_ref: str) -> float:
         if not self.is_connected() or not self.contract: return 0.0
         
@@ -821,7 +895,6 @@ class IBKRProvider(ExecutionProvider):
         elif pos_qty < 0:
             target_action = "BUY"
         else:
-            # Om flat: Leta efter Pending Anchor för att veta vilken riktning SL ligger på
             for t in self.ib.openTrades():
                 if t.contract.conId == self.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
                     if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
@@ -831,21 +904,17 @@ class IBKRProvider(ExecutionProvider):
         for t in self.ib.openTrades():
             if t.contract.conId == self.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
                 
-                # 1. Mjölnir Native Match
                 if t.order.orderRef == order_ref:
                     return getattr(t.order, 'auxPrice', getattr(t.order, 'lmtPrice', 0.0))
                 
-                # 2. Gentle Sentinel Match (Kräver nu bara att target_action hittats)
                 if target_action and t.order.action == target_action:
                     if order_ref == 'SL' and t.order.orderType in ['STP', 'STP LMT', 'TRAIL']:
                         return t.order.auxPrice
-                    # Säkerställ att vi inte råkar läsa en Limit Entry Order av misstag
                     elif order_ref == 'TP' and t.order.orderType == 'LMT' and t.order.parentId != 0:
                         return t.order.lmtPrice
                         
         return 0.0
     
-    # REPLACE
     def modify_order(self, order_ref: str, new_price: float, new_qty: Optional[int] = None):
         if not self.is_connected() or not self.contract: return
         
@@ -858,7 +927,6 @@ class IBKRProvider(ExecutionProvider):
         elif pos_qty < 0:
             target_action = "BUY"
         else:
-            # Om flat: Leta efter Pending Anchor
             for t in self.ib.openTrades():
                 if t.contract.conId == self.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
                     if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
@@ -879,11 +947,9 @@ class IBKRProvider(ExecutionProvider):
 
                 if is_match:
                     if order_ref == 'SL':
-                        # THE DUAL-MOVE LOGIC: Flytta Limit-priset med exakt samma avstånd!
                         if t.order.orderType == 'STP LMT':
                             price_diff = new_price - t.order.auxPrice
                             t.order.lmtPrice = round(t.order.lmtPrice + price_diff, 4)
-                        # Sätt sedan det nya Stop-priset
                         t.order.auxPrice = new_price
                         
                     elif order_ref == 'TP':
@@ -893,8 +959,7 @@ class IBKRProvider(ExecutionProvider):
                         t.order.totalQuantity = new_qty
                         
                     self.ib.placeOrder(t.contract, t.order)
-                    return # Avbryt efter att vi hittat och modifierat rätt order
-
+                    return 
 
     def cancel_order_by_id(self, order_id: int):
         if not self.is_connected(): return
@@ -928,6 +993,7 @@ class IBKRProvider(ExecutionProvider):
 # MODIFIED: SENTINEL MANAGER (THE CADET LOGIC)
 # =============================================================================
 
+# REPLACE
 class SentinelManager(QObject):
     log_signal = pyqtSignal(str)
     ui_update = pyqtSignal(dict)
@@ -937,7 +1003,7 @@ class SentinelManager(QObject):
     sl_reject_signal = pyqtSignal()
     arm_reject_signal = pyqtSignal()      
     cooldown_reject_signal = pyqtSignal() 
-    max_qty_reject_signal = pyqtSignal() # NYTT: Signal för max capacity nådd
+    max_qty_reject_signal = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -952,7 +1018,6 @@ class SentinelManager(QObject):
         self.pt_timer = QTimer()
         self.pt_timer.timeout.connect(self._tick_post_trade_cooldown)
         
-        # SL Grace Period
         self.sl_locked = False
         self.grace_time_remaining = 0
         self.grace_timer = QTimer()
@@ -986,7 +1051,7 @@ class SentinelManager(QObject):
 
     def _start_grace_period(self):
         self.sl_locked = False
-        self.grace_time_remaining = 200  # 20 sekunder (100ms ticks = 200 ticks)
+        self.grace_time_remaining = 200 
         self.grace_timer.start(100)
         self.log_signal.emit("CADET: 20s SL Grace Period started. 🔓")
         self.update_ui_state()
@@ -1034,7 +1099,6 @@ class SentinelManager(QObject):
             self.turbo_mode = False
             self.virtual_tp = 0.0
             
-            # NYTT: Stäng av Grace Period och lås upp
             self.grace_timer.stop()
             self.sl_locked = False
             
@@ -1047,15 +1111,13 @@ class SentinelManager(QObject):
             self.peak_price = self.current_price
             self.current_trail_distance = self.trail_points
             
-            self._start_grace_period() # NYTT: Starta vår 20s grace-timer!
-            
+            self._start_grace_period()
             QTimer.singleShot(200, lambda: self._perform_auto_snap(q))
             
         self.pos_qty = q
         self.update_ui_state()
 
     def _perform_auto_snap(self, q):
-        # NYTT: Avbryt omedelbart om Mjölnir är i SAFE-mode!
         if not self.is_armed or self.pos_qty == 0: return 
         
         direction = 1 if q > 0 else -1
@@ -1069,7 +1131,6 @@ class SentinelManager(QObject):
             if p.is_connected(): p.modify_order('SL', exact_sl)
         self.log_signal.emit(f"CADET: SL Locked to pure fill ({exact_sl})")
         
-    # MODIFIED: Belongs to class SentinelManager
     def update_ui_state(self):
         open_orders = 0
         order_details = []
@@ -1079,7 +1140,6 @@ class SentinelManager(QObject):
         pending_anchor = 0.0
         pending_direction = 0
 
-        # 1. Bestäm riktning och hitta eventuell väntande Entry (Anchor)
         if self.pos_qty > 0: 
             target_action = "SELL"
         elif self.pos_qty < 0: 
@@ -1097,7 +1157,6 @@ class SentinelManager(QObject):
 
         active_stops = []
 
-        # 2. Samla in all order- och positionsdata
         for p in self.providers:
             if p.is_connected():
                 for pos in p.ib.positions():
@@ -1129,9 +1188,6 @@ class SentinelManager(QObject):
                         ord_str = f"ORD: {t.contract.symbol} {t.order.action} {t.order.orderType} {int(t.order.totalQuantity)} @ {price:.2f}"
                         other_details.append({'type': 'order', 'text': ord_str})
 
-        # ==========================================
-        # THE MAGNETIC BRACKET & QTY-SYNC
-        # ==========================================
         has_multiple_sl = False
         expected_sl = 0.0 
         current_active_sl = 0.0 
@@ -1171,9 +1227,6 @@ class SentinelManager(QObject):
             self._last_pending_anchor = 0.0
             current_active_sl = expected_sl
 
-        # ==========================================
-        # BERÄKNA SECURED PROFIT ELLER RISK
-        # ==========================================
         secured_pts = 0.0
         if self.pos_qty != 0:
             direction = 1 if self.pos_qty > 0 else -1
@@ -1192,13 +1245,10 @@ class SentinelManager(QObject):
                 bid_s = p.mkt_data.bidSize if p.mkt_data.bidSize and not math.isnan(p.mkt_data.bidSize) else 0
                 ask_s = p.mkt_data.askSize if p.mkt_data.askSize and not math.isnan(p.mkt_data.askSize) else 0
 
-        # ==========================================
-        # NY LOGIK: SORTERA LIMITS vs STOPS FÖR DOM
-        # ==========================================
         working_buys = {}
         working_sells = {}
-        working_stops_buy = {}  # NYTT
-        working_stops_sell = {} # NYTT
+        working_stops_buy = {}  
+        working_stops_sell = {} 
         
         for p in self.providers:
             if p.is_connected() and p.contract:
@@ -1229,7 +1279,6 @@ class SentinelManager(QObject):
                                     else:
                                         working_sells[p_snap] = working_sells.get(p_snap, 0) + int(qty)
 
-        # --- GHOST ORDER LOGIC ---
         pending_sl_nudge = self.pending_nudges.get('SL', 0.0)
         pending_sl_side = None
         if pending_sl_nudge > 0.0:
@@ -1263,9 +1312,9 @@ class SentinelManager(QObject):
             'secured_pts': secured_pts,
             'bid': bid_p, 'ask': ask_p, 'bid_size': bid_s, 'ask_size': ask_s,
             'my_buys': working_buys, 'my_sells': working_sells,
-            'my_stop_buys': working_stops_buy, 'my_stop_sells': working_stops_sell, # NYTT
+            'my_stop_buys': working_stops_buy, 'my_stop_sells': working_stops_sell,
             'pending_sl_nudge': pending_sl_nudge, 
-            'pending_sl_side': pending_sl_side    
+            'pending_sl_side': pending_sl_side   
         }
 
         if self.pos_qty != 0:
@@ -1275,7 +1324,6 @@ class SentinelManager(QObject):
 
         self.ui_update.emit(data)
     
-
     def handle_price(self, p):
         self.current_price = p
         if self.pos_qty == 0: 
@@ -1287,17 +1335,13 @@ class SentinelManager(QObject):
         if self.peak_price == 0.0: self.peak_price = p
         else: self.peak_price = max(self.peak_price, p) if direction == 1 else min(self.peak_price, p)
 
-        # VIRTUAL TP LOGIK
         if self.use_virtual_tp and self.virtual_tp > 0.0 and not self.turbo_mode:
             if (direction == 1 and p >= self.virtual_tp) or (direction == -1 and p <= self.virtual_tp):
                 self.log_signal.emit(f"🎯 VIRTUAL TP HIT ({self.virtual_tp:.2f}): Activating Turbo Trail!")
                 self.trail_active = True
                 self.turbo_mode = True
                 self.current_trail_distance = self.tight_trail_points
-                
-                # THE FIX: Nollställ peak till nuvarande pris vid aktivering!
                 self.peak_price = p 
-                
                 self.process_trailing_stop()
 
         if self.trail_active: self.process_trailing_stop()
@@ -1328,22 +1372,17 @@ class SentinelManager(QObject):
                         current_p = p.get_order_price(target_ref)
                         if current_p: p.modify_order(target_ref, current_p, new_qty=abs(self.pos_qty))
 
-
     def process_trailing_stop(self):
-        # Ren och skär matte nu när baseline (peak) är korrekt uppsatt
         if self.pos_qty == 0: return
         direction = 1 if self.pos_qty > 0 else -1
-        
         target_sl = round(round((self.peak_price - (self.current_trail_distance * direction)) / self.min_tick) * self.min_tick, 4)
         
         for p in self.providers:
             if p.is_connected():
                 current_sl = self.pending_nudges.get('SL', p.get_order_price('SL'))
-                
                 if current_sl and ((direction == 1 and target_sl > current_sl) or (direction == -1 and target_sl < current_sl)):
                     self.pending_nudges['SL'] = target_sl
                     self.nudge_timer.start(400)
-
 
     def handle_error(self, c, m):
         self.log_signal.emit(f"API ERROR [{c}]: {m}")
@@ -1357,43 +1396,99 @@ class SentinelManager(QObject):
             if hasattr(p, 'clear_contract'): p.clear_contract()
         self.update_ui_state()
 
+    def _get_pending_direction(self) -> int:
+        for p in self.providers:
+            if p.is_connected() and p.contract:
+                for t in p.ib.openTrades():
+                    if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                        if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
+                            return 1 if t.order.action == "BUY" else -1
+        return 0
+
+    def _is_over_max_capacity(self, side: int, add_qty: int) -> bool:
+        current_pending = 0
+        for p in self.providers:
+            if p.is_connected() and p.contract:
+                for t in p.ib.openTrades():
+                    if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                        if t.order.parentId == 0 and t.order.action == ("BUY" if side == 1 else "SELL"):
+                            current_pending += (int(t.order.totalQuantity) - int(t.orderStatus.filled))
+        return (abs(self.pos_qty) + current_pending + add_qty) > self.max_qty
+
+    def _check_pre_fill_scale_violation(self, action: str, new_price: float) -> bool:
+        """Ser till att nya ordrar alltid läggs SÄMRE än the Master Anchor för att säkra SL"""
+        if self.pos_qty != 0: return False 
+        
+        anchor_price = 0.0
+        anchor_type = 'LMT'
+        for p in self.providers:
+            if p.is_connected() and p.contract:
+                for t in p.ib.openTrades():
+                    if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                        # Identifierar The Master Anchor via dess orderRef "ENTRY"
+                        if t.order.parentId == 0 and t.order.action == action and t.order.orderRef == "ENTRY":
+                            anchor_price = getattr(t.order, 'auxPrice', 0.0) if t.order.orderType in ['STP'] else getattr(t.order, 'lmtPrice', 0.0)
+                            anchor_type = t.order.orderType
+                            break
+                            
+        if anchor_price > 0.0:
+            if anchor_type in ['STP', 'STP LMT']:
+                if action == "BUY" and new_price <= anchor_price: return True
+                if action == "SELL" and new_price >= anchor_price: return True
+            else:
+                if action == "BUY" and new_price >= anchor_price: return True
+                if action == "SELL" and new_price <= anchor_price: return True
+                
+        return False
+
     def execute_trade(self, action: str):
-        # 1. GUARD RAIL: Oarmerat system
         if not self.is_armed:
             self.arm_reject_signal.emit()
             self.log_signal.emit("REJECTED: System is SAFE. Arm first.")
             return
             
-        # 2. GUARD RAIL: Cooldown aktiv
         if getattr(self, 'post_trade_cooldown_active', False):
             self.cooldown_reject_signal.emit()
             self.log_signal.emit("REJECTED: Post-trade cooldown active. ⏳")
             return
 
         if self.cooldown: return
-
         self.cooldown = True
         QTimer.singleShot(400, lambda: setattr(self, 'cooldown', False))
         
         qty = self.trade_qty
         side = 1 if action == "BUY" else -1
         
-        # THE AGGRESSIVE ENTRY TICK FIX (Minst 2 ticks marginal)
         slip_ticks = max(2, math.ceil(self.slippage / self.min_tick))
         lmt = round(self.current_price + (slip_ticks * self.min_tick * side), 4)
-        
-        is_scaling = False
-        if (self.pos_qty > 0 and action == "BUY") or (self.pos_qty < 0 and action == "SELL"):
-            if abs(self.pos_qty) + qty > self.max_qty:
-                self.max_qty_reject_signal.emit() # NYTT: Säg till GUI:t att blinka!
-                self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
-                return
-            is_scaling = True
-        elif (self.pos_qty > 0 and action == "SELL") or (self.pos_qty < 0 and action == "BUY"):
+
+        if (self.pos_qty > 0 and side == -1) or (self.pos_qty < 0 and side == 1):
             if abs(self.pos_qty) <= qty:
                 self.execute_close()
                 return
-            is_scaling = True
+                
+        if self._is_over_max_capacity(side, qty):
+            self.max_qty_reject_signal.emit() 
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
+            return
+            
+        if self._check_pre_fill_scale_violation(action, lmt):
+            self.cooldown_reject_signal.emit()
+            self.log_signal.emit("GUARD RAIL: Scale must be placed BEHIND Anchor! ⛔")
+            return
+            
+        pending_dir = self._get_pending_direction()
+        is_scaling = False
+        
+        if self.pos_qty != 0:
+            is_scaling = True 
+        else:
+            if pending_dir != 0:
+                if side == pending_dir:
+                    is_scaling = True
+                else:
+                    self.log_signal.emit("REJECTED: Cancel opposite pending orders first.")
+                    return
 
         if is_scaling:
             for p in self.providers:
@@ -1404,7 +1499,6 @@ class SentinelManager(QObject):
                 if p.is_connected(): p.place_bracket(action, qty, lmt, 0.0, sl_price)
 
     def _sniper_entry(self, action: str):
-        # 1. GUARD RAIL
         if not self.is_armed:
             self.arm_reject_signal.emit()
             self.log_signal.emit("REJECTED: System is SAFE. Arm first.")
@@ -1413,7 +1507,6 @@ class SentinelManager(QObject):
         qty = self.trade_qty
         side = 1 if action == "BUY" else -1
         
-        # 2. Hitta exakt Bid eller Ask
         exact_p = 0.0
         for p in self.providers:
             if p.is_connected() and hasattr(p, 'mkt_data') and p.mkt_data:
@@ -1423,24 +1516,37 @@ class SentinelManager(QObject):
                     exact_p = p.mkt_data.ask if p.mkt_data.ask and not math.isnan(p.mkt_data.ask) else 0.0
         
         if exact_p <= 0.0:
-            exact_p = self.current_price # Fallback om orderboken blinkar tomt en millisekund
+            exact_p = self.current_price
 
-        # 3. Logik för Position Scaling vs Close
-        is_scaling = False
-        if (self.pos_qty > 0 and action == "BUY") or (self.pos_qty < 0 and action == "SELL"):
-            if abs(self.pos_qty) + qty > self.max_qty:
-                self.max_qty_reject_signal.emit()
-                self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
-                return
-            is_scaling = True
-        elif (self.pos_qty > 0 and action == "SELL") or (self.pos_qty < 0 and action == "BUY"):
-            # Trycker du Join Bid när du är Kort, räddar vi dig genom att stänga positionen omedelbart
+        if (self.pos_qty > 0 and side == -1) or (self.pos_qty < 0 and side == 1):
             self.execute_close()
+            return
+
+        if self._is_over_max_capacity(side, qty):
+            self.max_qty_reject_signal.emit()
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
             return
             
         lmt = round(exact_p, 4)
+        
+        if self._check_pre_fill_scale_violation(action, lmt):
+            self.cooldown_reject_signal.emit()
+            self.log_signal.emit("GUARD RAIL: Scale must be placed BEHIND Anchor! ⛔")
+            return
+            
+        pending_dir = self._get_pending_direction()
+        is_scaling = False
+        
+        if self.pos_qty != 0:
+            is_scaling = True
+        else:
+            if pending_dir != 0:
+                if side == pending_dir:
+                    is_scaling = True
+                else:
+                    self.log_signal.emit("REJECTED: Cancel opposite pending orders first.")
+                    return
 
-        # 4. Skicka ordern
         if is_scaling:
             for p in self.providers:
                 if p.is_connected(): p.place_single_order(action, qty, lmt, "SCALE")
@@ -1455,14 +1561,12 @@ class SentinelManager(QObject):
     def execute_join_ask(self): self._sniper_entry("SELL")
 
     def execute_cancel_working(self):
-        # The Surgical Cancel: Tar BARA bort väntande Limit Entry-ordrar. Rör inte SL eller TP!
         count = 0
         for p in self.providers:
             if p.is_connected() and hasattr(p, 'ib'):
                 for t in p.ib.openTrades():
                     if p.contract and t.contract.conId == p.contract.conId:
                         if t.orderStatus.status not in ['Cancelled', 'Filled', 'Inactive', 'ApiCancelled', 'PendingCancel']:
-                            # parentId == 0 betyder att det är Huvudordern (inte en SL eller TP som hör till en parent)
                             if t.order.parentId == 0 and t.order.orderType == 'LMT':
                                 p.ib.cancelOrder(t.order)
                                 count += 1
@@ -1484,55 +1588,18 @@ class SentinelManager(QObject):
         if self.pos_qty == 0: return
         if not self.trail_active:
             self.trail_active, self.turbo_mode = True, False
-            # Här gjorde vi redan rätt för the normal trail
             self.peak_price, self.current_trail_distance = self.current_price, self.trail_points
             self.log_signal.emit(f"TRAIL ACTIVE: {self.trail_points} pts.")
         elif not self.turbo_mode:
             self.turbo_mode, self.current_trail_distance = True, self.tight_trail_points
-            
-            # THE FIX: Nollställ peak till nuvarande pris vid manuell Turbo-aktivering!
             self.peak_price = self.current_price 
-            
             self.log_signal.emit(f"TURBO ACTIVE: {self.tight_trail_points} pts.")
             self.process_trailing_stop()
         self.update_ui_state()
-        
 
     def nudge_order(self, order_type: str, price_ticks: int):
-        # 1. RETREAT LOCK GUARD RAIL
-        if order_type == 'SL' and self.pos_qty != 0:
-            if price_ticks < 0: # Försöker flytta SL BORT från priset (öka risken)
-                if self.sl_locked:
-                    self.sl_reject_signal.emit()
-                    self.log_signal.emit("GUARD RAIL: SL Retreat BLOCKED. 🔒")
-                    return
-            elif price_ticks > 0: # Försöker flytta SL NÄRMARE priset (minska risken)
-                if not self.sl_locked:
-                    self.sl_locked = True
-                    self.grace_timer.stop()
-                    self.grace_time_remaining = 0
-                    self.log_signal.emit("CADET: Risk reduced. SL Direction Locked early. 🔒")
-
         direction = 1 if self.pos_qty > 0 else -1
-        current_price = 0.0
-        is_live_nudge = False
-
-        # 2. HITTA DET FAKTISKA PRISET ATT NUDGA (Live eller Pending)
-        if self.is_armed and self.pos_qty != 0:
-            for p in self.providers:
-                if p.is_connected():
-                    # Prioritera en nudge som redan ligger i kön, annars hämta live från IBKR
-                    current_price = self.pending_nudges.get(order_type, p.get_order_price(order_type))
-                    if current_price > 0.0: 
-                        is_live_nudge = True
-                        break
-
-        if current_price == 0.0:
-            # Fallback (Platt läge, ingen position ännu)
-            anchor = getattr(self, '_last_pending_anchor', 0.0)
-            if anchor == 0.0: return # Inget att nudga
-            
-            # Kolla riktning på limit-ordern
+        if self.pos_qty == 0:
             for p in self.providers:
                 if p.is_connected() and p.contract:
                     for t in p.ib.openTrades():
@@ -1541,23 +1608,57 @@ class SentinelManager(QObject):
                                 direction = 1 if t.order.action == "BUY" else -1
                                 break
 
+        if order_type == 'SL' and self.pos_qty != 0:
+            if price_ticks < 0: 
+                if self.sl_locked:
+                    self.sl_reject_signal.emit()
+                    self.log_signal.emit("GUARD RAIL: SL Retreat BLOCKED. 🔒")
+                    return
+            elif price_ticks > 0: 
+                if not self.sl_locked:
+                    self.sl_locked = True
+                    self.grace_timer.stop()
+                    self.grace_time_remaining = 0
+                    self.log_signal.emit("CADET: Risk reduced. SL Direction Locked early. 🔒")
+
+        current_price = 0.0
+        is_live_nudge = False
+
+        if self.is_armed and self.pos_qty != 0:
+            for p in self.providers:
+                if p.is_connected():
+                    current_price = self.pending_nudges.get(order_type, p.get_order_price(order_type))
+                    if current_price > 0.0: 
+                        is_live_nudge = True
+                        break
+
+        if current_price == 0.0:
+            anchor = getattr(self, '_last_pending_anchor', 0.0)
+            if anchor == 0.0: return 
+
             if order_type == 'SL':
                 current_price = anchor - (self.sl_points * direction)
             elif order_type == 'TP':
                 current_price = anchor + (self.tp_points * direction)
 
         if current_price > 0.0:
-            # 3. APPLICERA NUDGE PÅ FAKTISKT PRIS
             exact_price = round(current_price + (price_ticks * self.min_tick * direction), 4)
 
-            # 4. UPPDATERA MJÖLNIRS MINNE OCH TRAIL-LOGIK
+            # Pre-fill limit Guard Rail för Nudge
+            if order_type == 'SL' and self.pos_qty == 0:
+                anchor = getattr(self, '_last_pending_anchor', 0.0)
+                if anchor > 0:
+                    if (direction == 1 and exact_price >= anchor) or (direction == -1 and exact_price <= anchor):
+                        self.sl_reject_signal.emit()
+                        self.log_signal.emit("GUARD RAIL: SL cannot cross Pending Entry! ⛔")
+                        return
+
             if not is_live_nudge:
                 if order_type == 'SL':
                     self.sl_points = max(self.min_tick, self.sl_points - (price_ticks * self.min_tick))
                 elif order_type == 'TP':
                     self.tp_points = max(self.min_tick, self.tp_points + (price_ticks * self.min_tick))
             else:
-                # --- THE SMART TRAIL SYNC ---
                 if self.trail_active and order_type == 'SL':
                     new_dist = (self.peak_price - exact_price) * direction
                     if new_dist > 0:
@@ -1568,10 +1669,9 @@ class SentinelManager(QObject):
             self.nudge_timer.start(400)
             self._pending_log_type = order_type
             
-        self.update_ui_state() # NYTT: Tvingar fram ghost order i DOMen direkt utan dröjsmål!
+        self.update_ui_state()
 
     def commit_nudges(self):
-        # 1. Utför API-anropet till IBKR
         for ref, price in self.pending_nudges.items():
             for p in self.providers:
                 if p.is_connected(): p.modify_order(ref, price)
@@ -1579,7 +1679,6 @@ class SentinelManager(QObject):
             
         self.pending_nudges.clear()
 
-        # 2. Skriv ut UI-logg (visas oavsett om vi är i SAFE eller ARMED)
         if hasattr(self, '_pending_log_type') and self._pending_log_type:
             ref = self._pending_log_type
             self.log_signal.emit(f"CADET: {ref} limit dynamically adjusted.")
@@ -1593,7 +1692,6 @@ class SentinelManager(QObject):
                     action = "SELL" if self.pos_qty > 0 else "BUY"
                     side = 1 if action == "BUY" else -1
                     
-                    # THE PANIC BUTTON TICK FIX (Minst 4 ticks aggressiv marginal!)
                     slip_ticks = max(4, math.ceil(self.slippage / self.min_tick))
                     lmt = round(self.current_price + (slip_ticks * self.min_tick * side), 4)
                     
@@ -1613,8 +1711,174 @@ class SentinelManager(QObject):
             self.post_trade_cooldown_active = False
         self.update_ui_state()
 
+    # =========================================================================
+    # THE NEW DOM-CLICK EVENT HANDLERS (SEPARATION OF CONCERNS)
+    # =========================================================================
 
-# REPLACE
+    def handle_dom_place_order(self, action: str, order_type: str, price: float):
+        if getattr(self, 'post_trade_cooldown_active', False):
+            self.cooldown_reject_signal.emit()
+            self.log_signal.emit("REJECTED: Post-trade cooldown active. ⏳")
+            return
+
+        if self.cooldown: return
+        self.cooldown = True
+        QTimer.singleShot(400, lambda: setattr(self, 'cooldown', False))
+
+        qty = self.trade_qty
+        side = 1 if action == "BUY" else -1
+
+        if self._is_over_max_capacity(side, qty):
+            self.max_qty_reject_signal.emit()
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
+            return
+
+        pending_dir = self._get_pending_direction()
+        is_scaling = False
+
+        if self.pos_qty != 0:
+            if (self.pos_qty > 0 and side == 1) or (self.pos_qty < 0 and side == -1):
+                is_scaling = True
+            else:
+                return # Block opposite click
+        else:
+            if pending_dir != 0:
+                if side == pending_dir:
+                    is_scaling = True
+                else:
+                    self.log_signal.emit("REJECTED: Cancel opposite pending orders first.")
+                    return
+
+        # VÄKTARENS NYA SPÄRR
+        if self._check_pre_fill_scale_violation(action, price):
+            self.cooldown_reject_signal.emit() # Får Order Status att blinka rött
+            self.log_signal.emit("GUARD RAIL: Scale must be placed BEHIND Anchor! ⛔")
+            return
+
+        if is_scaling:
+            for p in self.providers:
+                if p.is_connected(): p.place_single_order(action, qty, price, "SCALE", order_type=order_type)
+            self.log_signal.emit(f"DOM: Sent {action} {order_type} @ {price:.2f} (SCALE)")
+        else:
+            sl_price = round(round((price - (self.sl_points * side)) / self.min_tick) * self.min_tick, 4)
+            for p in self.providers:
+                if p.is_connected(): p.place_bracket(action, qty, price, 0.0, sl_price, entry_type=order_type)
+            self.log_signal.emit(f"DOM: Sent {action} {order_type} @ {price:.2f} with Guard SL at {sl_price:.2f}")
+
+    def handle_dom_modify_qty(self, action: str, price: float):
+        qty_increase = self.trade_qty
+        side = 1 if action == "BUY" else -1
+        
+        if self._is_over_max_capacity(side, qty_increase):
+            self.max_qty_reject_signal.emit()
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
+            return
+            
+        for p in self.providers:
+            if p.is_connected():
+                for t in p.ib.openTrades():
+                    if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                        if t.order.parentId == 0 and t.order.action == action:
+                            current_p = getattr(t.order, 'auxPrice', 0.0) if t.order.orderType in ['STP'] else getattr(t.order, 'lmtPrice', 0.0)
+                            if abs(current_p - price) < (self.min_tick * 0.1):
+                                new_qty = t.order.totalQuantity + qty_increase
+                                t.order.totalQuantity = new_qty
+                                p.ib.placeOrder(t.contract, t.order)
+                                self.log_signal.emit(f"DOM: Scaled {action} order to {new_qty} contracts.")
+                                return
+
+    def move_order_to_price(self, order_type: str, new_price: float):
+        direction = 1 if self.pos_qty > 0 else -1
+        if self.pos_qty == 0:
+            for p in self.providers:
+                if p.is_connected() and p.contract:
+                    for t in p.ib.openTrades():
+                        if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                            if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
+                                direction = 1 if t.order.action == "BUY" else -1
+                                break
+
+        # 1. RETREAT LOCK GUARD RAIL
+        if order_type == 'SL' and self.pos_qty != 0:
+            current_sl = 0.0
+            for p in self.providers:
+                if p.is_connected():
+                    current_sl = self.pending_nudges.get('SL', p.get_order_price('SL'))
+                    if current_sl > 0: break
+
+            if current_sl > 0:
+                is_retreat = (direction == 1 and new_price < current_sl) or (direction == -1 and new_price > current_sl)
+                if is_retreat and self.sl_locked:
+                    self.sl_reject_signal.emit()
+                    self.log_signal.emit("GUARD RAIL: SL Retreat BLOCKED. 🔒")
+                    return
+                elif not is_retreat and not self.sl_locked:
+                    self.sl_locked = True
+                    self.grace_timer.stop()
+                    self.grace_time_remaining = 0
+                    self.log_signal.emit("CADET: Risk reduced. SL Direction Locked early. 🔒")
+
+        # 2. THE HARD LIMIT GUARD RAIL (MAX 20 POINTS RISK)
+        if order_type == 'SL':
+            anchor = self.avg_price if self.pos_qty != 0 else getattr(self, '_last_pending_anchor', 0.0)
+            if anchor > 0:
+                max_pts = 20.0
+                worst_allowed = anchor - (max_pts * direction)
+                if (direction == 1 and new_price < worst_allowed) or (direction == -1 and new_price > worst_allowed):
+                    self.sl_reject_signal.emit()
+                    self.log_signal.emit(f"GUARD RAIL: Hard Risk Limit! Max {max_pts} pts. ⛔")
+                    return
+
+        # 3. PRE-FILL CROSS GUARD RAIL (Can't move SL past entry)
+        if order_type == 'SL' and self.pos_qty == 0:
+            anchor = getattr(self, '_last_pending_anchor', 0.0)
+            if anchor > 0:
+                if (direction == 1 and new_price >= anchor) or (direction == -1 and new_price <= anchor):
+                    self.sl_reject_signal.emit()
+                    self.log_signal.emit("GUARD RAIL: SL cannot cross Pending Entry! ⛔")
+                    return
+
+        # 4. COMMIT NUDGE
+        self.pending_nudges[order_type] = new_price
+        self.nudge_timer.start(200) # Fast UI update
+        self._pending_log_type = order_type
+
+        anchor = self.avg_price if self.pos_qty != 0 else getattr(self, '_last_pending_anchor', 0.0)
+        if anchor > 0:
+            if order_type == 'SL':
+                self.sl_points = max(self.min_tick, (anchor - new_price) * direction)
+            elif order_type == 'TP':
+                self.tp_points = max(self.min_tick, (new_price - anchor) * direction)
+                
+        self.update_ui_state()
+
+    def cancel_dom_order(self, target: str, price: float):
+        for p in self.providers:
+            if p.is_connected():
+                for t in p.ib.openTrades():
+                    if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
+                        current_p = getattr(t.order, 'auxPrice', 0.0) if t.order.orderType in ['STP', 'STP LMT', 'TRAIL'] else getattr(t.order, 'lmtPrice', 0.0)
+                        if abs(current_p - price) < (self.min_tick * 0.1):
+                            if target == 'TP' and t.order.orderRef == 'TP':
+                                p.ib.cancelOrder(t.order)
+                                self.log_signal.emit(f"DOM: Cancelled TP @ {price:.2f}")
+                                return
+                            elif target == 'ENTRY' and t.order.parentId == 0:
+                                # Om the Master Anchor klickas bort, döda alla scale-ordrar för att inte lämna dig naken!
+                                if self.pos_qty == 0 and t.order.orderRef == "ENTRY":
+                                    count = 0
+                                    for p_sub in self.providers:
+                                        for t_sub in p_sub.ib.openTrades():
+                                            if t_sub.contract.conId == p.contract.conId and t_sub.order.parentId == 0 and t_sub.orderStatus.status not in OrderStatus.DoneStates:
+                                                if t_sub.order.action == t.order.action:
+                                                    p_sub.ib.cancelOrder(t_sub.order)
+                                                    count += 1
+                                    self.log_signal.emit(f"DOM: Cancelled {count} linked entries to protect scales.")
+                                else:
+                                    p.ib.cancelOrder(t.order)
+                                    self.log_signal.emit(f"DOM: Cancelled Entry @ {price:.2f}")
+                                return                     
+
 class GlobalHotkeyManager(QObject):
     sig_arm = pyqtSignal()
     sig_trade = pyqtSignal(str)
@@ -1627,7 +1891,7 @@ class GlobalHotkeyManager(QObject):
     sig_join_bid = pyqtSignal()
     sig_join_ask = pyqtSignal()
     sig_cancel_working = pyqtSignal()
-    sig_recenter_dom = pyqtSignal() # NEW: Global signal to recenter DOM
+    sig_recenter_dom = pyqtSignal() 
 
     def __init__(self, gui):
         super().__init__()
@@ -1659,13 +1923,9 @@ class GlobalHotkeyManager(QObject):
         keyboard.add_hotkey('ctrl+shift+F6', self.sig_join_ask.emit)
         keyboard.add_hotkey('ctrl+shift+F7', self.sig_cancel_working.emit)
         
-        # NEW: DOM HOTKEYS
+        # DOM HOTKEYS
         keyboard.add_hotkey('ctrl+shift+F12', self.sig_recenter_dom.emit)
 
-
-# =============================================================================
-# MODIFIED: GUI (MJÖLNIR - THE CADET)
-# =============================================================================
 
 class MjolnirGUI(QWidget):
     def __init__(self):
@@ -2305,7 +2565,6 @@ class MjolnirGUI(QWidget):
             data.get('other_activity', []), 
             data.get('multi_sl_warning', False)
         )
-        # NYTT: Håll DOM:en vid liv med all data (Top of book)
         if self.dom_window.isVisible():
             self.dom_window.update_dom(data, self.manager.min_tick)
             if self.active_instrument_name:
@@ -2358,29 +2617,22 @@ class MjolnirGUI(QWidget):
         self.dom_height_preset = heights[idx]
         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
         
-        # Ändra fönstrets höjd omedelbart om det är skapat
         if hasattr(self, 'dom_window'):
-            # Behåll nuvarande bredd, uppdatera bara höjden
             current_width = self.dom_window.width()
             self.dom_window.resize(current_width, self.dom_height_preset)
 
 
     def update_log(self, text):
         log_str = f"[{time.strftime('%H:%M:%S')}] {text}"
-        
-        # 1. Terminal Echo (Din "Svarta Låda")
         print(log_str)
-        
-        # 2. Uppdatera GUI (Lägger till längst ner och scrollar automatiskt)
         self.log_display.append(log_str)
         
-        # Rensar gammalt om den blir extremt lång, för att spara RAM
         if self.log_display.document().blockCount() > 200:
             cursor = self.log_display.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.select(cursor.SelectionType.BlockUnderCursor)
             cursor.removeSelectedText()
-            cursor.deleteChar() # Tar bort tomraden
+            cursor.deleteChar() 
             
         self.lbl_ticker.set_custom_text(text, "#00ffff" if "READY" in text.upper() else "#888888")
 
@@ -2407,8 +2659,6 @@ class MjolnirGUI(QWidget):
         self._cooldown_warning_active = False
         self.manager.update_ui_state()
 
-
-    # MODIFIED: Belongs to class MjolnirGUI
     def setup_connections(self):
         self.manager.log_signal.connect(self.update_log)
         self.manager.ui_update.connect(self.update_hud)
@@ -2421,18 +2671,14 @@ class MjolnirGUI(QWidget):
         self.global_hotkeys.sig_join_bid.connect(self.manager.execute_join_bid)
         self.global_hotkeys.sig_join_ask.connect(self.manager.execute_join_ask)
         self.global_hotkeys.sig_cancel_working.connect(self.manager.execute_cancel_working)
-        
-        # NEW: Connect the global hotkey directly to the DOM window's recenter function
         self.global_hotkeys.sig_recenter_dom.connect(self.dom_window.recenter)
 
     def blink_sl_warning(self):
-        # Visuell smäll på fingrarna vid felaktig SL flytt!
         self._sl_warning_active = True
         self.lbl_trade_status.setStyleSheet("color: #ffffff; font-size: 32pt; font-weight: bold; font-family: Consolas; background-color: #8b0000; border-radius: 4px;")
         QTimer.singleShot(300, self.reset_sl_warning)
 
     def setup_hotkeys(self):
-        # Aktiverar the thread-safe global hotkeys
         self.global_hotkeys = GlobalHotkeyManager(self)
 
     def load_instruments(self):
@@ -2448,19 +2694,15 @@ class MjolnirGUI(QWidget):
         self.ib_provider.disconnect()
         self.manager.is_armed = False
         
-        # Om det var vi själva som stängde ner det via knappen
         if getattr(self, '_is_manual_disconnect', False):
             self._is_manual_disconnect = False
-            # Behöver inte göra något, reset_connection_ui har redan körts
         else:
-            # Om det var en krasch eller TWS stängdes ner oväntat
             self.update_log("🚨 CRITICAL: CONNECTION TO TWS LOST! SYSTEM DISARMED.")
-            self.btn_arm.setChecked(False) # Klicka ur knappen visuellt
+            self.btn_arm.setChecked(False) 
             self.btn_arm.setEnabled(False)
             self.btn_connect.setText("⚠")
             self.alarm_timer.start(500)
             
-        # Forcera en UI-uppdatering så The Vertical HUD går från Marinblå till Grå direkt
         self.manager.update_ui_state()
 
     def blink_connection_alarm(self):
@@ -2503,7 +2745,7 @@ class MjolnirGUI(QWidget):
                     "last_instrument": self.combo_symbol.currentText(),
                     "use_virtual_tp": self.chk_virtual_tp.isChecked(),
                     "dom_scales": getattr(self, 'dom_scales', {}),
-                    "dom_height": getattr(self, 'dom_height_preset', 800) # NYTT: Sparar höjden
+                    "dom_height": getattr(self, 'dom_height_preset', 800) 
                 }, f, indent=4)
         except: pass
 
