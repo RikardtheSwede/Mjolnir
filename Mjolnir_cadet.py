@@ -118,7 +118,7 @@ class TWSInspectorWindow(QWidget):
             self.warning_lbl.hide()
 
 class DOMWidget(QWidget):
-    """Den rena grafikmotorn för prisstegen."""
+    """Den rena grafikmotorn för prisstegen - Jigsaw Layout."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.center_price = 0.0 
@@ -127,6 +127,13 @@ class DOMWidget(QWidget):
         self.bid_size, self.ask_size = 0, 0
         self.min_tick = 0.25
         self.pixels_per_point = 80  
+        
+        # Data för ordrar och positioner
+        self.my_buys = {}
+        self.my_sells = {}
+        self.pos_qty = 0
+        self.avg_price = 0.0
+        
         self.setStyleSheet("background-color: #0d0d0d;")
 
     def paintEvent(self, event):
@@ -137,6 +144,15 @@ class DOMWidget(QWidget):
         painter.fillRect(0, 0, w, h, QColor("#0d0d0d"))
         if self.center_price == 0.0: return
         
+        # Kolumn-layout (Fysiska gränser i pixlar)
+        center_x = w / 2
+        col_price_w = 100
+        col_orders_w = 40
+        
+        x_price_start = center_x - (col_price_w / 2)
+        x_my_buys = x_price_start - col_orders_w
+        x_my_sells = x_price_start + col_price_w
+        
         center_y = h / 2
         points_visible_half = (h / 2) / self.pixels_per_point
         max_price = self.center_price + points_visible_half
@@ -145,7 +161,6 @@ class DOMWidget(QWidget):
         start_price = math.ceil(min_price / self.min_tick) * self.min_tick
         end_price = math.floor(max_price / self.min_tick) * self.min_tick
         
-        # --- FONT SELECTION (Dynamisk storlek) ---
         if self.pixels_per_point < 18:
             painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold)) 
         else:
@@ -162,71 +177,96 @@ class DOMWidget(QWidget):
         while p <= end_price + (self.min_tick / 2):
             price_diff = p - self.center_price
             y = int(center_y - (price_diff * self.pixels_per_point))
-            
             row_height = self.pixels_per_point * self.min_tick
             point_height = self.pixels_per_point
             
+            # Subtila avrundningar för flyttalsjämförelser
+            p_round = round(p, 4)
             is_current = abs(p - self.current_price) < (self.min_tick * 0.1)
             is_bid = abs(p - self.bid_price) < (self.min_tick * 0.1)
             is_ask = abs(p - self.ask_price) < (self.min_tick * 0.1)
             
-            # --- 1. THE DANCING PRICE (Background) ---
-            if is_current:
-                box_h = max(row_height, th + 4) 
-                painter.fillRect(0, int(y - box_h/2), w, int(box_h), QColor("#004466"))
+            # Har vi en position exakt här?
+            is_avg_price = (self.pos_qty != 0) and abs(p - self.avg_price) < (self.min_tick * 0.1)
             
-            # --- 2. GRID THINNING (Tuffare krav på whitespace för linjer) ---
+            # --- 1. BAKGRUNDS-MARKERINGAR (Pris och Position) ---
+            box_y = int(y - max(row_height, th + 4)/2)
+            box_h = int(max(row_height, th + 4))
+            
+            if is_current:
+                painter.fillRect(int(x_price_start), box_y, int(col_price_w), box_h, QColor("#004466"))
+                
+            # Om vi är i position, rita en solid rad i vår order-kolumn!
+            if is_avg_price:
+                if self.pos_qty > 0:
+                    painter.fillRect(int(x_my_buys), box_y, int(col_orders_w), box_h, QColor("#006633")) # Grön position
+                else:
+                    painter.fillRect(int(x_my_sells), box_y, int(col_orders_w), box_h, QColor("#660000")) # Röd position
+            
+            # --- 2. GRID THINNING ---
             should_draw_line = False
             current_pen = grid_pen
-            
-            if row_height >= 6: 
-                should_draw_line = True 
+            if row_height >= 6: should_draw_line = True 
             elif point_height >= 8:
-                if p % 1.0 == 0: 
-                    should_draw_line = True 
-                    current_pen = grid_pen_strong
+                if p % 1.0 == 0: should_draw_line = True; current_pen = grid_pen_strong
             else:
-                if p % 5.0 == 0:
-                    should_draw_line = True 
-                    current_pen = grid_pen_strong
+                if p % 5.0 == 0: should_draw_line = True; current_pen = grid_pen_strong
             
             if should_draw_line or is_current:
                 painter.setPen(current_pen)
                 painter.drawLine(0, y, w, y)
             
-            # --- 3. DYNAMIC TEXT THINNING (Låter logiken styra allt) ---
+            # --- 3. DYNAMIC TEXT THINNING (Bara för Pris-kolumnen) ---
             should_draw_text = False
-            
-            if row_height >= th * 1.2: 
-                # Gott om plats: Rita alla ticks (XX.25)
-                should_draw_text = True 
+            if row_height >= th * 1.2: should_draw_text = True 
             elif point_height >= th * 1.5:
-                # Behöver minst 1.5x font-höjden i luft för att rita varje hel poäng (XX.00)
                 if p % 1.0 == 0: should_draw_text = True 
             elif point_height * 5 >= th * 1.2:
-                # Annars hoppar vi direkt till var 5:e poäng
                 if p % 5.0 == 0: should_draw_text = True
             else:
-                # Max utzoom: Var 10:e poäng
                 if p % 10.0 == 0: should_draw_text = True 
                 
             if should_draw_text:
                 if p % 1.0 == 0: painter.setPen(QPen(QColor("#dddddd")))
                 else: painter.setPen(text_pen)
-                    
                 price_str = f"{p:.2f}"
                 tw = metrics.horizontalAdvance(price_str)
-                painter.drawText(int((w - tw) / 2), y + int(th/3), price_str)
+                painter.drawText(int(center_x - (tw / 2)), y + int(th/3), price_str)
             
-            # --- 4. RITA BID/ASK VOLYM ---
+            # --- 4. MARKNADENS LIKVIDITET (Ytterkanterna) ---
             if is_bid and self.bid_size > 0:
                 painter.setPen(QPen(QColor("#00ffcc"))) 
                 painter.drawText(15, y + int(th/3), str(int(self.bid_size)))
-                
             if is_ask and self.ask_size > 0:
                 painter.setPen(QPen(QColor("#ff4444"))) 
                 aw = metrics.horizontalAdvance(str(int(self.ask_size)))
                 painter.drawText(w - aw - 15, y + int(th/3), str(int(self.ask_size)))
+
+            # --- 5. MINA ORDRAR OCH POSITION (Inre kolumnerna) ---
+            # Rita antalet kontrakt vi har vilande på detta pris
+            if p_round in self.my_buys:
+                painter.setPen(QPen(QColor("#ffffff")))
+                b_qty = str(self.my_buys[p_round])
+                painter.fillRect(int(x_my_buys+2), box_y+2, int(col_orders_w-4), box_h-4, QColor("#0088cc")) # Ljusblå box
+                tw = metrics.horizontalAdvance(b_qty)
+                painter.drawText(int(x_my_buys + (col_orders_w - tw)/2), y + int(th/3), b_qty)
+                
+            if p_round in self.my_sells:
+                painter.setPen(QPen(QColor("#ffffff")))
+                s_qty = str(self.my_sells[p_round])
+                painter.fillRect(int(x_my_sells+2), box_y+2, int(col_orders_w-4), box_h-4, QColor("#cc4400")) # Orange box
+                tw = metrics.horizontalAdvance(s_qty)
+                painter.drawText(int(x_my_sells + (col_orders_w - tw)/2), y + int(th/3), s_qty)
+
+            # Om vi är i position, rita in positionens storlek (override)
+            if is_avg_price:
+                painter.setPen(QPen(QColor("#ffffff")))
+                pos_str = str(abs(self.pos_qty))
+                tw = metrics.horizontalAdvance(pos_str)
+                if self.pos_qty > 0:
+                    painter.drawText(int(x_my_buys + (col_orders_w - tw)/2), y + int(th/3), pos_str)
+                else:
+                    painter.drawText(int(x_my_sells + (col_orders_w - tw)/2), y + int(th/3), pos_str)
                 
             p += self.min_tick
 
@@ -234,7 +274,7 @@ class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("MJÖLNIR MICRO-DOM")
-        self.resize(350, 800) 
+        self.resize(450, 800) 
         self.setStyleSheet("background-color: #151515;")
         self.manager = parent.manager if parent else None
         
@@ -308,6 +348,24 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.ask_price = data.get('ask', 0.0)
         self.dom_widget.bid_size = data.get('bid_size', 0)
         self.dom_widget.ask_size = data.get('ask_size', 0)
+        
+        # NYTT: Hämta position och räkna ut visnings-snittpris (Sämsta tick)
+        self.dom_widget.pos_qty = data.get('pos', 0)
+        raw_avg = data.get('avg', 0.0)
+        
+        if self.dom_widget.pos_qty > 0:
+            # Lång: Sämre pris är HÖGRE. Vi avrundar UPPÅT (ceil)
+            display_avg = math.ceil(raw_avg / min_tick) * min_tick
+        elif self.dom_widget.pos_qty < 0:
+            # Kort: Sämre pris är LÄGRE. Vi avrundar NEDÅT (floor)
+            display_avg = math.floor(raw_avg / min_tick) * min_tick
+        else:
+            display_avg = 0.0
+            
+        self.dom_widget.avg_price = round(display_avg, 4)
+        
+        self.dom_widget.my_buys = data.get('my_buys', {})
+        self.dom_widget.my_sells = data.get('my_sells', {})
         
         if self._auto_center and current > 0:
             self.dom_widget.center_price = current
@@ -505,15 +563,8 @@ class IBKRProvider(ExecutionProvider):
         order.orderRef = order_ref
         order.usePriceMgmtAlgo = True
         order.transmit = True  
-        trade = self.ib.placeOrder(self.contract, order)
-        if order_ref == "SCALE":
-            QTimer.singleShot(10000, lambda: self.cleanup_stale_order(trade))
+        self.ib.placeOrder(self.contract, order)
 
-    def cleanup_stale_order(self, trade):
-        if self.is_connected() and trade.orderStatus.status not in OrderStatus.DoneStates:
-            self.ib.cancelOrder(trade.order)
-
-    # REPLACE (I IBKRProvider)
     def cancel_all(self):
         if not self.contract or not self.is_connected(): return
         count = 0
@@ -922,6 +973,40 @@ class SentinelManager(QObject):
                 bid_s = p.mkt_data.bidSize if p.mkt_data.bidSize and not math.isnan(p.mkt_data.bidSize) else 0
                 ask_s = p.mkt_data.askSize if p.mkt_data.askSize and not math.isnan(p.mkt_data.askSize) else 0
 
+        # ==========================================
+        # NY LOGIK: KARTLÄGG VÄNTANDE ORDRAR FÖR DOM
+        # ==========================================
+        working_buys = {}
+        working_sells = {}
+        
+        for p in self.providers:
+            # Säkerställ att vi är uppkopplade och har ett instrument valt
+            if p.is_connected() and p.contract:
+                for trade in p.ib.openTrades():
+                    # VIKTIGT: Visa bara ordrar för DETTA instrumentet
+                    if trade.contract.conId == p.contract.conId:
+                        if trade.orderStatus.status not in ['Filled', 'Cancelled', 'Inactive', 'ApiCancelled']:
+                            side = trade.order.action
+                            qty = trade.order.totalQuantity - trade.orderStatus.filled
+                            
+                            # Rätt pris beroende på ordertyp (Precis som i PnL-logiken)
+                            if trade.order.orderType in ['STP', 'STP LMT', 'TRAIL']:
+                                raw_p = getattr(trade.order, 'auxPrice', 0.0)
+                            else:
+                                raw_p = getattr(trade.order, 'lmtPrice', 0.0)
+                                
+                            # Filtrera bort IBKRs "Infinity"-tal
+                            price_lvl = raw_p if (raw_p and 0 < raw_p < 1e100) else 0.0
+                            
+                            if price_lvl > 0 and qty > 0:
+                                # Snäpp till närmaste tick för att matcha DOM-skalan (Rundat för säkerhet)
+                                p_snap = round(round(price_lvl / self.min_tick) * self.min_tick, 4)
+                                if side == 'BUY':
+                                    working_buys[p_snap] = working_buys.get(p_snap, 0) + int(qty)
+                                else:
+                                    working_sells[p_snap] = working_sells.get(p_snap, 0) + int(qty)
+
+
         data = {
             'pos': int(self.pos_qty), 'avg': self.avg_price, 'price': self.current_price,
             'pl': 0.0, 'tp_pts': self.tp_points, 'sl_pts': self.sl_points, 
@@ -939,8 +1024,9 @@ class SentinelManager(QObject):
             'sl_locked': getattr(self, 'sl_locked', False),
             'grace_remaining': getattr(self, 'grace_time_remaining', 0),
             'secured_pts': secured_pts,
-            # NYTT: Skickar med orderbokens Top-of-book till GUI
-            'bid': bid_p, 'ask': ask_p, 'bid_size': bid_s, 'ask_size': ask_s 
+            'bid': bid_p, 'ask': ask_p, 'bid_size': bid_s, 'ask_size': ask_s,
+            # NYTT: Data för The Jigsaw Layout
+            'my_buys': working_buys, 'my_sells': working_sells 
         }
 
         if self.pos_qty != 0:
@@ -1069,6 +1155,75 @@ class SentinelManager(QObject):
             sl_price = round(round((self.current_price - (self.sl_points * side)) / self.min_tick) * self.min_tick, 4)
             for p in self.providers:
                 if p.is_connected(): p.place_bracket(action, qty, lmt, 0.0, sl_price)
+
+    def _sniper_entry(self, action: str):
+        # 1. GUARD RAIL
+        if not self.is_armed:
+            self.arm_reject_signal.emit()
+            self.log_signal.emit("REJECTED: System is SAFE. Arm first.")
+            return
+
+        qty = self.trade_qty
+        side = 1 if action == "BUY" else -1
+        
+        # 2. Hitta exakt Bid eller Ask
+        exact_p = 0.0
+        for p in self.providers:
+            if p.is_connected() and hasattr(p, 'mkt_data') and p.mkt_data:
+                if action == "BUY":
+                    exact_p = p.mkt_data.bid if p.mkt_data.bid and not math.isnan(p.mkt_data.bid) else 0.0
+                else:
+                    exact_p = p.mkt_data.ask if p.mkt_data.ask and not math.isnan(p.mkt_data.ask) else 0.0
+        
+        if exact_p <= 0.0:
+            exact_p = self.current_price # Fallback om orderboken blinkar tomt en millisekund
+
+        # 3. Logik för Position Scaling vs Close
+        is_scaling = False
+        if (self.pos_qty > 0 and action == "BUY") or (self.pos_qty < 0 and action == "SELL"):
+            if abs(self.pos_qty) + qty > self.max_qty:
+                self.max_qty_reject_signal.emit()
+                self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
+                return
+            is_scaling = True
+        elif (self.pos_qty > 0 and action == "SELL") or (self.pos_qty < 0 and action == "BUY"):
+            # Trycker du Join Bid när du är Kort, räddar vi dig genom att stänga positionen omedelbart
+            self.execute_close()
+            return
+            
+        lmt = round(exact_p, 4)
+
+        # 4. Skicka ordern
+        if is_scaling:
+            for p in self.providers:
+                if p.is_connected(): p.place_single_order(action, qty, lmt, "SCALE")
+            self.log_signal.emit(f"SNIPER: Joined {action} at {lmt:.2f} (SCALE)")
+        else:
+            sl_price = round(round((lmt - (self.sl_points * side)) / self.min_tick) * self.min_tick, 4)
+            for p in self.providers:
+                if p.is_connected(): p.place_bracket(action, qty, lmt, 0.0, sl_price)
+            self.log_signal.emit(f"SNIPER: Joined {action} at {lmt:.2f} with Guard SL at {sl_price:.2f}")
+
+    def execute_join_bid(self): self._sniper_entry("BUY")
+    def execute_join_ask(self): self._sniper_entry("SELL")
+
+    def execute_cancel_working(self):
+        # The Surgical Cancel: Tar BARA bort väntande Limit Entry-ordrar. Rör inte SL eller TP!
+        count = 0
+        for p in self.providers:
+            if p.is_connected() and hasattr(p, 'ib'):
+                for t in p.ib.openTrades():
+                    if p.contract and t.contract.conId == p.contract.conId:
+                        if t.orderStatus.status not in ['Cancelled', 'Filled', 'Inactive', 'ApiCancelled', 'PendingCancel']:
+                            # parentId == 0 betyder att det är Huvudordern (inte en SL eller TP som hör till en parent)
+                            if t.order.parentId == 0 and t.order.orderType == 'LMT':
+                                p.ib.cancelOrder(t.order)
+                                count += 1
+        
+        if count > 0:
+            self.log_signal.emit(f"CANCEL: Removed {count} pending entry order(s).")
+        else:
+            self.log_signal.emit("CANCEL: No pending entry orders found.")
 
     def execute_be_move(self):
         if self.pos_qty == 0: return
@@ -1209,7 +1364,6 @@ class SentinelManager(QObject):
         self.update_ui_state()
 
 
-# NEW: The Thread-Safe Bridge for Global Hotkeys
 class GlobalHotkeyManager(QObject):
     sig_arm = pyqtSignal()
     sig_trade = pyqtSignal(str)
@@ -1217,6 +1371,11 @@ class GlobalHotkeyManager(QObject):
     sig_trail = pyqtSignal()
     sig_be = pyqtSignal()
     sig_nudge = pyqtSignal(str, int)
+    
+    # NYA SIGNALER
+    sig_join_bid = pyqtSignal()
+    sig_join_ask = pyqtSignal()
+    sig_cancel_working = pyqtSignal()
 
     def __init__(self, gui):
         super().__init__()
@@ -1239,12 +1398,15 @@ class GlobalHotkeyManager(QObject):
         keyboard.add_hotkey('ctrl+shift+t', self.sig_trail.emit)
         keyboard.add_hotkey('ctrl+shift+e', self.sig_be.emit)
         
-        # RISK MANAGEMENT HOTKEYS (+ / -)
-        # ctrl+shift++ ökar risken (SL flyttas bort från priset)
+        # RISK MANAGEMENT HOTKEYS 
         keyboard.add_hotkey('ctrl+shift+I', lambda: self.sig_nudge.emit('SL', -1))
-        # ctrl+shift+- minskar risken (SL flyttas närmare priset)
         keyboard.add_hotkey('ctrl+shift+K', lambda: self.sig_nudge.emit('SL', 1))
         
+        # SNIPER HOTKEYS (Direkt till emit!)
+        keyboard.add_hotkey('ctrl+shift+F5', self.sig_join_bid.emit)
+        keyboard.add_hotkey('ctrl+shift+F6', self.sig_join_ask.emit)
+        keyboard.add_hotkey('ctrl+shift+F7', self.sig_cancel_working.emit)
+
 
 # =============================================================================
 # MODIFIED: GUI (MJÖLNIR - THE CADET)
@@ -1275,8 +1437,9 @@ class MjolnirGUI(QWidget):
         self.ammo_blink_count = 0
         self.is_maxed = False
 
-        self.setup_connections()
         self.setup_hotkeys()
+        self.setup_connections()
+        
 
     def init_ui(self):
         self.setWindowTitle("MJÖLNIR - THE CADET")
@@ -1996,11 +2159,14 @@ class MjolnirGUI(QWidget):
         self.manager.log_signal.connect(self.update_log)
         self.manager.ui_update.connect(self.update_hud)
         self.manager.connection_status.connect(self.on_connection_result)
-        self.manager.connection_lost_signal.connect(self.handle_connection_lost) # <--- HÄR ÄR DEN SAKNADE SLADDEN!
+        self.manager.connection_lost_signal.connect(self.handle_connection_lost)
         self.manager.sl_reject_signal.connect(self.blink_sl_warning)
         self.manager.arm_reject_signal.connect(self.blink_arm_warning)
         self.manager.cooldown_reject_signal.connect(self.blink_cooldown_warning)
         self.manager.max_qty_reject_signal.connect(self.trigger_ammo_blink)
+        self.global_hotkeys.sig_join_bid.connect(self.manager.execute_join_bid)
+        self.global_hotkeys.sig_join_ask.connect(self.manager.execute_join_ask)
+        self.global_hotkeys.sig_cancel_working.connect(self.manager.execute_cancel_working)
 
     def blink_sl_warning(self):
         # Visuell smäll på fingrarna vid felaktig SL flytt!
@@ -2067,7 +2233,7 @@ class MjolnirGUI(QWidget):
                     if hasattr(self, 'btn_dom_height'):
                         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
                     if hasattr(self, 'dom_window'):
-                        self.dom_window.resize(350, self.dom_height_preset)
+                        self.dom_window.resize(450, self.dom_height_preset)
                         
             except: pass
 
