@@ -131,11 +131,14 @@ class DOMWidget(QWidget):
         
         self.my_buys = {}
         self.my_sells = {}
-        self.my_stop_buys = {}  # NYTT
-        self.my_stop_sells = {} # NYTT
+        self.my_stop_buys = {}
+        self.my_stop_sells = {}
         
         self.pos_qty = 0
         self.avg_price = 0.0
+        
+        self.pending_anchor = 0.0
+        self.pending_direction = 1
         
         self.pending_sl_nudge = 0.0
         self.pending_sl_side = None
@@ -177,6 +180,8 @@ class DOMWidget(QWidget):
                 
             self.update()
 
+
+    # MODIFIED
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -187,35 +192,35 @@ class DOMWidget(QWidget):
         if self.center_price == 0.0: return
         
         center_x = w / 2
-        col_price_w = 90
+        # Nya proportioner och ordning: BID | BUY | PRICE | SEL | ASK | LVL
+        col_price_w = 80
         col_bids_w = 40
         col_asks_w = 40
-        col_buys_w = 50  
-        col_sells_w = 50 
-        
+        col_buys_w = 60  
+        col_sells_w = 60 
         col_levels_w = 65 
-        x_levels = w - col_levels_w
         
         x_price = center_x - (col_price_w / 2)
-        x_bids = x_price - col_bids_w
-        x_buys = x_bids - col_buys_w
-        x_asks = x_price + col_price_w
-        x_sells = x_asks + col_asks_w
+        x_buys = x_price - col_buys_w
+        x_bids = x_buys - col_bids_w
+        x_sells = x_price + col_price_w
+        x_asks = x_sells + col_sells_w
+        x_levels = w - col_levels_w
         
-        painter.fillRect(int(x_bids), 0, int(col_bids_w), h, QColor(0, 255, 150, 8)) 
-        painter.fillRect(int(x_asks), 0, int(col_asks_w), h, QColor(255, 50, 50, 8)) 
-        painter.fillRect(int(x_buys), 0, int(col_buys_w), h, QColor(0, 150, 255, 4)) 
-        painter.fillRect(int(x_sells), 0, int(col_sells_w), h, QColor(255, 150, 0, 4)) 
-        painter.fillRect(int(x_levels), 0, int(col_levels_w), h, QColor(179, 136, 255, 6)) 
+        painter.fillRect(int(x_bids), 0, int(col_bids_w), h, QColor(0, 255, 150, 20)) 
+        painter.fillRect(int(x_asks), 0, int(col_asks_w), h, QColor(255, 50, 50, 20)) 
+        painter.fillRect(int(x_buys), 0, int(col_buys_w), h, QColor(0, 150, 255, 15)) 
+        painter.fillRect(int(x_sells), 0, int(col_sells_w), h, QColor(255, 150, 0, 15)) 
+        painter.fillRect(int(x_levels), 0, int(col_levels_w), h, QColor(179, 136, 255, 15)) 
         
         div_pen = QPen(QColor("#444444")) 
         painter.setPen(div_pen)
-        painter.drawLine(int(x_buys), 0, int(x_buys), h) 
         painter.drawLine(int(x_bids), 0, int(x_bids), h) 
+        painter.drawLine(int(x_buys), 0, int(x_buys), h) 
         painter.drawLine(int(x_price), 0, int(x_price), h) 
-        painter.drawLine(int(x_asks), 0, int(x_asks), h) 
         painter.drawLine(int(x_sells), 0, int(x_sells), h) 
-        painter.drawLine(int(x_sells + col_sells_w), 0, int(x_sells + col_sells_w), h) 
+        painter.drawLine(int(x_asks), 0, int(x_asks), h) 
+        painter.drawLine(int(x_asks + col_asks_w), 0, int(x_asks + col_asks_w), h) 
         painter.drawLine(int(x_levels), 0, int(x_levels), h) 
 
         center_y = h / 2
@@ -238,7 +243,7 @@ class DOMWidget(QWidget):
         metrics = painter.fontMetrics()
         th = metrics.height() 
 
-        # --- PNL ZONE & BREAK-EVEN LINE ---
+        # --- EXTENDED PNL ZONE & BREAK-EVEN LINE ---
         if self.pos_qty != 0 and self.avg_price > 0 and self.current_price > 0:
             y_avg = int(center_y - ((self.avg_price - self.center_price) * self.pixels_per_point))
             y_curr = int(center_y - ((self.current_price - self.center_price) * self.pixels_per_point))
@@ -251,11 +256,19 @@ class DOMWidget(QWidget):
             elif self.pos_qty < 0 and self.current_price <= self.avg_price: is_profit = True
             
             zone_color = QColor(0, 255, 100, 30) if is_profit else QColor(255, 50, 50, 30)
-            painter.fillRect(int(x_price), top_y, int(col_price_w), zone_h, zone_color)
+            zone_x = int(x_buys)
+            zone_w = int(col_buys_w + col_price_w + col_sells_w)
+            
+            painter.fillRect(zone_x, top_y, zone_w, zone_h, zone_color)
             
             painter.setPen(QPen(QColor("#ffffff"), 2))
-            painter.drawLine(int(x_price), y_avg, int(x_price + col_price_w), y_avg)
+            painter.drawLine(zone_x, y_avg, zone_x + zone_w, y_avg)
         
+        # Determine anchor for the point scale
+        anchor_price = self.avg_price if self.pos_qty != 0 else self.pending_anchor
+        direction = 1 if self.pos_qty > 0 else (-1 if self.pos_qty < 0 else self.pending_direction)
+        scale_anchor = round(anchor_price / self.min_tick) * self.min_tick if anchor_price > 0 else 0.0
+
         p = start_price
         while p <= end_price + (self.min_tick / 2):
             price_diff = p - self.center_price
@@ -276,9 +289,9 @@ class DOMWidget(QWidget):
             box_y = int(y - max(row_height, th + 4)/2)
             box_h = int(max(row_height, th + 4))
             
-            # Current Price Highlight
+            # Extended Current Price Highlight
             if is_current:
-                painter.fillRect(int(x_price), box_y, int(col_price_w), box_h, QColor("#004466"))
+                painter.fillRect(int(x_buys), box_y, int(col_buys_w + col_price_w + col_sells_w), box_h, QColor("#00334d"))
                 
             # Draw Grid Lines
             should_draw_line = False
@@ -298,7 +311,7 @@ class DOMWidget(QWidget):
                 dash_pen = QPen(QColor("#b388ff")) 
                 dash_pen.setStyle(Qt.PenStyle.DashLine)
                 painter.setPen(dash_pen)
-                painter.drawLine(int(x_buys), y, int(x_levels), y) 
+                painter.drawLine(int(x_bids), y, int(x_levels), y) 
                 
                 painter.fillRect(int(x_levels), box_y, int(col_levels_w), box_h, QColor(179, 136, 255, 60))
                 painter.fillRect(int(x_levels), box_y, 3, box_h, QColor("#b388ff"))
@@ -317,9 +330,10 @@ class DOMWidget(QWidget):
             else:
                 if p % 10.0 == 0: should_draw_text = True 
                 
-            if should_draw_text or is_current or is_avg_price:
-                if is_current or is_avg_price:
-                    painter.setPen(QPen(QColor("#ffffff"))) 
+            if should_draw_text:
+                if is_current:
+                    # KIRURGISK ÄNDRING: Här byter vi till en skarp cyan för aktuellt pris
+                    painter.setPen(QPen(QColor("#00ffff"))) 
                 elif p % 1.0 == 0: 
                     painter.setPen(QPen(QColor("#dddddd")))
                 else: 
@@ -328,6 +342,20 @@ class DOMWidget(QWidget):
                 price_str = f"{p:.2f}"
                 tw = metrics.horizontalAdvance(price_str)
                 painter.drawText(int(center_x - (tw / 2)), y + int(th/3), price_str)
+
+            # --- DYNAMIC PNL POINT LADDER ---
+            if scale_anchor > 0.0 and should_draw_text:
+                pts = (p_round - scale_anchor) * direction
+                pts_str = f"{pts:+.2f}" if pts != 0 else " 0.00"
+                
+                pts_color = QColor("#55cc55") if pts > 0 else QColor("#cc5555") if pts < 0 else QColor("#888888")
+                painter.setPen(QPen(pts_color))
+                pw = metrics.horizontalAdvance(pts_str)
+                
+                if direction == 1: # Long
+                    painter.drawText(int(x_buys + (col_buys_w - pw)/2), y + int(th/3), pts_str)
+                elif direction == -1: # Short
+                    painter.drawText(int(x_sells + (col_sells_w - pw)/2), y + int(th/3), pts_str)
             
             # Market Liquidity
             if is_bid and self.bid_size > 0:
@@ -344,7 +372,7 @@ class DOMWidget(QWidget):
             # THE NEW ORDER RENDERING HIERARCHY
             # ========================================================
 
-            # A. LIMIT ORDERS (Solid Blocks)
+            # A. LIMIT ORDERS
             if p_round in self.my_buys:
                 b_qty = str(self.my_buys[p_round])
                 painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#0088cc")) 
@@ -359,11 +387,11 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(s_qty)
                 painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), s_qty)
 
-            # B. STOP LOSS ORDERS (Outlined with "SL" text)
+            # B. STOP LOSS ORDERS
             if p_round in self.my_stop_buys:
                 qty_str = f"SL {self.my_stop_buys[p_round]}"
                 painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#002233"))
-                painter.setPen(QPen(QColor("#00ffcc"), 1)) # Cyan border
+                painter.setPen(QPen(QColor("#00ffcc"), 1))
                 painter.drawRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4)
                 painter.setPen(QPen(QColor("#00ffcc")))
                 tw = metrics.horizontalAdvance(qty_str)
@@ -372,13 +400,13 @@ class DOMWidget(QWidget):
             if p_round in self.my_stop_sells:
                 qty_str = f"SL {self.my_stop_sells[p_round]}"
                 painter.fillRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4, QColor("#330000"))
-                painter.setPen(QPen(QColor("#ff4444"), 1)) # Red border
+                painter.setPen(QPen(QColor("#ff4444"), 1))
                 painter.drawRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4)
                 painter.setPen(QPen(QColor("#ff4444")))
                 tw = metrics.horizontalAdvance(qty_str)
                 painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
 
-            # C. GHOST SL ORDER (Dashed outline, gray text)
+            # C. GHOST SL ORDER
             if is_pending_sl:
                 qty_str = f"SL {max(1, abs(self.pos_qty))}"
                 painter.setPen(QPen(QColor("#888888"), 1, Qt.PenStyle.DashLine))
@@ -395,17 +423,17 @@ class DOMWidget(QWidget):
                     tw = metrics.horizontalAdvance(qty_str)
                     painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
 
-            # D. OPEN POSITION AVERAGE PRICE (Neon Block, Highest Priority)
+            # D. OPEN POSITION AVERAGE PRICE
             if is_avg_price:
                 pos_str = f"POS {abs(self.pos_qty)}"
                 if self.pos_qty > 0:
-                    painter.fillRect(int(x_buys+1), box_y+1, int(col_buys_w-2), box_h-2, QColor("#00ff66")) # Neon Green
-                    painter.setPen(QPen(QColor("#000000"))) # Black text for extreme contrast
+                    painter.fillRect(int(x_buys+1), box_y+1, int(col_buys_w-2), box_h-2, QColor("#00ff66"))
+                    painter.setPen(QPen(QColor("#000000"))) 
                     tw = metrics.horizontalAdvance(pos_str)
                     painter.drawText(int(x_buys + (col_buys_w - tw)/2), y + int(th/3), pos_str)
                 else:
-                    painter.fillRect(int(x_sells+1), box_y+1, int(col_sells_w-2), box_h-2, QColor("#ff3333")) # Neon Red
-                    painter.setPen(QPen(QColor("#ffffff"))) # White text
+                    painter.fillRect(int(x_sells+1), box_y+1, int(col_sells_w-2), box_h-2, QColor("#ff3333"))
+                    painter.setPen(QPen(QColor("#ffffff"))) 
                     tw = metrics.horizontalAdvance(pos_str)
                     painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), pos_str)
                 
@@ -423,18 +451,17 @@ class DOMWidget(QWidget):
             tw = metrics.horizontalAdvance(text)
             painter.drawText(int(x + (width - tw)/2), 16, text)
 
-        draw_header("BUY", x_buys, col_buys_w)
         draw_header("BID", x_bids, col_bids_w)
+        draw_header("BUY", x_buys, col_buys_w)
         draw_header("PRICE", x_price, col_price_w)
-        draw_header("ASK", x_asks, col_asks_w)
         draw_header("SEL", x_sells, col_sells_w)
+        draw_header("ASK", x_asks, col_asks_w)
         draw_header("LVL", x_levels, col_levels_w)
         
         painter.setPen(QPen(QColor("#444444") if not self.is_armed else QColor("#0088aa")))
         painter.drawLine(0, header_h, w, header_h)
 
 
-# REPLACE
 class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
@@ -559,11 +586,14 @@ class MjolnirDOMWindow(QWidget):
             
         self.dom_widget.avg_price = round(display_avg, 4)
         
-        # Uppdatera båda typerna av ordrar från Mjölnir
+        # Mata in Pending Anchor och riktning för PnL-stegen
+        self.dom_widget.pending_anchor = data.get('pending_entry', 0.0)
+        self.dom_widget.pending_direction = data.get('display_direction', 1)
+        
         self.dom_widget.my_buys = data.get('my_buys', {})
         self.dom_widget.my_sells = data.get('my_sells', {})
-        self.dom_widget.my_stop_buys = data.get('my_stop_buys', {})   # NYTT
-        self.dom_widget.my_stop_sells = data.get('my_stop_sells', {}) # NYTT
+        self.dom_widget.my_stop_buys = data.get('my_stop_buys', {})   
+        self.dom_widget.my_stop_sells = data.get('my_stop_sells', {}) 
         
         self.dom_widget.pending_sl_nudge = data.get('pending_sl_nudge', 0.0)
         self.dom_widget.pending_sl_side = data.get('pending_sl_side', None)
