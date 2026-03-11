@@ -117,8 +117,9 @@ class TWSInspectorWindow(QWidget):
         else:
             self.warning_lbl.hide()
 
+# REPLACE
 class DOMWidget(QWidget):
-    """Den rena grafikmotorn för prisstegen - Jigsaw Layout."""
+    """The core graphics engine for the Price Ladder - Pro Jigsaw Layout."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.center_price = 0.0 
@@ -128,13 +129,53 @@ class DOMWidget(QWidget):
         self.min_tick = 0.25
         self.pixels_per_point = 80  
         
-        # Data för ordrar och positioner
         self.my_buys = {}
         self.my_sells = {}
+        self.my_stop_buys = {}  # NYTT
+        self.my_stop_sells = {} # NYTT
+        
         self.pos_qty = 0
         self.avg_price = 0.0
         
+        self.pending_sl_nudge = 0.0
+        self.pending_sl_side = None
+        
+        self.manual_levels = set()
+        self.is_armed = False 
+        
         self.setStyleSheet("background-color: #0d0d0d;")
+
+    def mousePressEvent(self, event):
+        if self.center_price == 0.0: return
+        
+        x, y = event.pos().x(), event.pos().y()
+        if y <= 24: return 
+        
+        w, h = self.width(), self.height()
+        
+        col_levels_w = 65 
+        x_levels = w - col_levels_w
+        
+        if x_levels <= x <= w:
+            center_y = h / 2
+            price_diff = (center_y - y) / self.pixels_per_point
+            raw_price = self.center_price + price_diff
+            clicked_price = round(round(raw_price / self.min_tick) * self.min_tick, 4)
+            
+            tolerance = 2.0
+            level_to_remove = None
+            
+            for lvl in self.manual_levels:
+                if abs(lvl - clicked_price) <= (tolerance + 1e-9):
+                    level_to_remove = lvl
+                    break
+                    
+            if level_to_remove is not None:
+                self.manual_levels.remove(level_to_remove)
+            else:
+                self.manual_levels.add(clicked_price)
+                
+            self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -142,17 +183,41 @@ class DOMWidget(QWidget):
         w, h = self.width(), self.height()
         
         painter.fillRect(0, 0, w, h, QColor("#0d0d0d"))
+
         if self.center_price == 0.0: return
         
-        # Kolumn-layout (Fysiska gränser i pixlar)
         center_x = w / 2
-        col_price_w = 100
-        col_orders_w = 40
+        col_price_w = 90
+        col_bids_w = 40
+        col_asks_w = 40
+        col_buys_w = 50  
+        col_sells_w = 50 
         
-        x_price_start = center_x - (col_price_w / 2)
-        x_my_buys = x_price_start - col_orders_w
-        x_my_sells = x_price_start + col_price_w
+        col_levels_w = 65 
+        x_levels = w - col_levels_w
         
+        x_price = center_x - (col_price_w / 2)
+        x_bids = x_price - col_bids_w
+        x_buys = x_bids - col_buys_w
+        x_asks = x_price + col_price_w
+        x_sells = x_asks + col_asks_w
+        
+        painter.fillRect(int(x_bids), 0, int(col_bids_w), h, QColor(0, 255, 150, 8)) 
+        painter.fillRect(int(x_asks), 0, int(col_asks_w), h, QColor(255, 50, 50, 8)) 
+        painter.fillRect(int(x_buys), 0, int(col_buys_w), h, QColor(0, 150, 255, 4)) 
+        painter.fillRect(int(x_sells), 0, int(col_sells_w), h, QColor(255, 150, 0, 4)) 
+        painter.fillRect(int(x_levels), 0, int(col_levels_w), h, QColor(179, 136, 255, 6)) 
+        
+        div_pen = QPen(QColor("#444444")) 
+        painter.setPen(div_pen)
+        painter.drawLine(int(x_buys), 0, int(x_buys), h) 
+        painter.drawLine(int(x_bids), 0, int(x_bids), h) 
+        painter.drawLine(int(x_price), 0, int(x_price), h) 
+        painter.drawLine(int(x_asks), 0, int(x_asks), h) 
+        painter.drawLine(int(x_sells), 0, int(x_sells), h) 
+        painter.drawLine(int(x_sells + col_sells_w), 0, int(x_sells + col_sells_w), h) 
+        painter.drawLine(int(x_levels), 0, int(x_levels), h) 
+
         center_y = h / 2
         points_visible_half = (h / 2) / self.pixels_per_point
         max_price = self.center_price + points_visible_half
@@ -172,6 +237,24 @@ class DOMWidget(QWidget):
         
         metrics = painter.fontMetrics()
         th = metrics.height() 
+
+        # --- PNL ZONE & BREAK-EVEN LINE ---
+        if self.pos_qty != 0 and self.avg_price > 0 and self.current_price > 0:
+            y_avg = int(center_y - ((self.avg_price - self.center_price) * self.pixels_per_point))
+            y_curr = int(center_y - ((self.current_price - self.center_price) * self.pixels_per_point))
+            
+            top_y = min(y_avg, y_curr)
+            zone_h = abs(y_avg - y_curr)
+            
+            is_profit = False
+            if self.pos_qty > 0 and self.current_price >= self.avg_price: is_profit = True
+            elif self.pos_qty < 0 and self.current_price <= self.avg_price: is_profit = True
+            
+            zone_color = QColor(0, 255, 100, 30) if is_profit else QColor(255, 50, 50, 30)
+            painter.fillRect(int(x_price), top_y, int(col_price_w), zone_h, zone_color)
+            
+            painter.setPen(QPen(QColor("#ffffff"), 2))
+            painter.drawLine(int(x_price), y_avg, int(x_price + col_price_w), y_avg)
         
         p = start_price
         while p <= end_price + (self.min_tick / 2):
@@ -180,30 +263,24 @@ class DOMWidget(QWidget):
             row_height = self.pixels_per_point * self.min_tick
             point_height = self.pixels_per_point
             
-            # Subtila avrundningar för flyttalsjämförelser
             p_round = round(p, 4)
             is_current = abs(p - self.current_price) < (self.min_tick * 0.1)
             is_bid = abs(p - self.bid_price) < (self.min_tick * 0.1)
             is_ask = abs(p - self.ask_price) < (self.min_tick * 0.1)
-            
-            # Har vi en position exakt här?
             is_avg_price = (self.pos_qty != 0) and abs(p - self.avg_price) < (self.min_tick * 0.1)
             
-            # --- 1. BAKGRUNDS-MARKERINGAR (Pris och Position) ---
+            is_pending_sl = False
+            if self.pending_sl_nudge > 0.0 and abs(p - self.pending_sl_nudge) < (self.min_tick * 0.1):
+                is_pending_sl = True
+            
             box_y = int(y - max(row_height, th + 4)/2)
             box_h = int(max(row_height, th + 4))
             
+            # Current Price Highlight
             if is_current:
-                painter.fillRect(int(x_price_start), box_y, int(col_price_w), box_h, QColor("#004466"))
+                painter.fillRect(int(x_price), box_y, int(col_price_w), box_h, QColor("#004466"))
                 
-            # Om vi är i position, rita en solid rad i vår order-kolumn!
-            if is_avg_price:
-                if self.pos_qty > 0:
-                    painter.fillRect(int(x_my_buys), box_y, int(col_orders_w), box_h, QColor("#006633")) # Grön position
-                else:
-                    painter.fillRect(int(x_my_sells), box_y, int(col_orders_w), box_h, QColor("#660000")) # Röd position
-            
-            # --- 2. GRID THINNING ---
+            # Draw Grid Lines
             should_draw_line = False
             current_pen = grid_pen
             if row_height >= 6: should_draw_line = True 
@@ -215,8 +292,22 @@ class DOMWidget(QWidget):
             if should_draw_line or is_current:
                 painter.setPen(current_pen)
                 painter.drawLine(0, y, w, y)
+                
+            # Draw Level Overlays
+            if p_round in self.manual_levels:
+                dash_pen = QPen(QColor("#b388ff")) 
+                dash_pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(dash_pen)
+                painter.drawLine(int(x_buys), y, int(x_levels), y) 
+                
+                painter.fillRect(int(x_levels), box_y, int(col_levels_w), box_h, QColor(179, 136, 255, 60))
+                painter.fillRect(int(x_levels), box_y, 3, box_h, QColor("#b388ff"))
+                
+                painter.setPen(QPen(QColor("#ffffff")))
+                lw = metrics.horizontalAdvance("M")
+                painter.drawText(int(x_levels + (col_levels_w - lw)/2), y + int(th/3), "M")
             
-            # --- 3. DYNAMIC TEXT THINNING (Bara för Pris-kolumnen) ---
+            # Price Text
             should_draw_text = False
             if row_height >= th * 1.2: should_draw_text = True 
             elif point_height >= th * 1.5:
@@ -226,105 +317,197 @@ class DOMWidget(QWidget):
             else:
                 if p % 10.0 == 0: should_draw_text = True 
                 
-            if should_draw_text:
-                if p % 1.0 == 0: painter.setPen(QPen(QColor("#dddddd")))
-                else: painter.setPen(text_pen)
+            if should_draw_text or is_current or is_avg_price:
+                if is_current or is_avg_price:
+                    painter.setPen(QPen(QColor("#ffffff"))) 
+                elif p % 1.0 == 0: 
+                    painter.setPen(QPen(QColor("#dddddd")))
+                else: 
+                    painter.setPen(text_pen)
+                    
                 price_str = f"{p:.2f}"
                 tw = metrics.horizontalAdvance(price_str)
                 painter.drawText(int(center_x - (tw / 2)), y + int(th/3), price_str)
             
-            # --- 4. MARKNADENS LIKVIDITET (Ytterkanterna) ---
+            # Market Liquidity
             if is_bid and self.bid_size > 0:
                 painter.setPen(QPen(QColor("#00ffcc"))) 
-                painter.drawText(15, y + int(th/3), str(int(self.bid_size)))
+                bw = metrics.horizontalAdvance(str(int(self.bid_size)))
+                painter.drawText(int(x_bids + (col_bids_w - bw)/2), y + int(th/3), str(int(self.bid_size)))
+                
             if is_ask and self.ask_size > 0:
                 painter.setPen(QPen(QColor("#ff4444"))) 
                 aw = metrics.horizontalAdvance(str(int(self.ask_size)))
-                painter.drawText(w - aw - 15, y + int(th/3), str(int(self.ask_size)))
+                painter.drawText(int(x_asks + (col_asks_w - aw)/2), y + int(th/3), str(int(self.ask_size)))
 
-            # --- 5. MINA ORDRAR OCH POSITION (Inre kolumnerna) ---
-            # Rita antalet kontrakt vi har vilande på detta pris
+            # ========================================================
+            # THE NEW ORDER RENDERING HIERARCHY
+            # ========================================================
+
+            # A. LIMIT ORDERS (Solid Blocks)
             if p_round in self.my_buys:
-                painter.setPen(QPen(QColor("#ffffff")))
                 b_qty = str(self.my_buys[p_round])
-                painter.fillRect(int(x_my_buys+2), box_y+2, int(col_orders_w-4), box_h-4, QColor("#0088cc")) # Ljusblå box
+                painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#0088cc")) 
+                painter.setPen(QPen(QColor("#ffffff")))
                 tw = metrics.horizontalAdvance(b_qty)
-                painter.drawText(int(x_my_buys + (col_orders_w - tw)/2), y + int(th/3), b_qty)
+                painter.drawText(int(x_buys + (col_buys_w - tw)/2), y + int(th/3), b_qty)
                 
             if p_round in self.my_sells:
-                painter.setPen(QPen(QColor("#ffffff")))
                 s_qty = str(self.my_sells[p_round])
-                painter.fillRect(int(x_my_sells+2), box_y+2, int(col_orders_w-4), box_h-4, QColor("#cc4400")) # Orange box
-                tw = metrics.horizontalAdvance(s_qty)
-                painter.drawText(int(x_my_sells + (col_orders_w - tw)/2), y + int(th/3), s_qty)
-
-            # Om vi är i position, rita in positionens storlek (override)
-            if is_avg_price:
+                painter.fillRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4, QColor("#cc4400")) 
                 painter.setPen(QPen(QColor("#ffffff")))
-                pos_str = str(abs(self.pos_qty))
-                tw = metrics.horizontalAdvance(pos_str)
+                tw = metrics.horizontalAdvance(s_qty)
+                painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), s_qty)
+
+            # B. STOP LOSS ORDERS (Outlined with "SL" text)
+            if p_round in self.my_stop_buys:
+                qty_str = f"SL {self.my_stop_buys[p_round]}"
+                painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#002233"))
+                painter.setPen(QPen(QColor("#00ffcc"), 1)) # Cyan border
+                painter.drawRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4)
+                painter.setPen(QPen(QColor("#00ffcc")))
+                tw = metrics.horizontalAdvance(qty_str)
+                painter.drawText(int(x_buys + (col_buys_w - tw)/2), y + int(th/3), qty_str)
+
+            if p_round in self.my_stop_sells:
+                qty_str = f"SL {self.my_stop_sells[p_round]}"
+                painter.fillRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4, QColor("#330000"))
+                painter.setPen(QPen(QColor("#ff4444"), 1)) # Red border
+                painter.drawRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4)
+                painter.setPen(QPen(QColor("#ff4444")))
+                tw = metrics.horizontalAdvance(qty_str)
+                painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
+
+            # C. GHOST SL ORDER (Dashed outline, gray text)
+            if is_pending_sl:
+                qty_str = f"SL {max(1, abs(self.pos_qty))}"
+                painter.setPen(QPen(QColor("#888888"), 1, Qt.PenStyle.DashLine))
+                if self.pending_sl_side == 'BUY':
+                    painter.fillRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4, QColor("#1a1a1a")) 
+                    painter.drawRect(int(x_buys+2), box_y+2, int(col_buys_w-4), box_h-4)
+                    painter.setPen(QPen(QColor("#888888")))
+                    tw = metrics.horizontalAdvance(qty_str)
+                    painter.drawText(int(x_buys + (col_buys_w - tw)/2), y + int(th/3), qty_str)
+                elif self.pending_sl_side == 'SELL':
+                    painter.fillRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4, QColor("#1a1a1a")) 
+                    painter.drawRect(int(x_sells+2), box_y+2, int(col_sells_w-4), box_h-4)
+                    painter.setPen(QPen(QColor("#888888")))
+                    tw = metrics.horizontalAdvance(qty_str)
+                    painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), qty_str)
+
+            # D. OPEN POSITION AVERAGE PRICE (Neon Block, Highest Priority)
+            if is_avg_price:
+                pos_str = f"POS {abs(self.pos_qty)}"
                 if self.pos_qty > 0:
-                    painter.drawText(int(x_my_buys + (col_orders_w - tw)/2), y + int(th/3), pos_str)
+                    painter.fillRect(int(x_buys+1), box_y+1, int(col_buys_w-2), box_h-2, QColor("#00ff66")) # Neon Green
+                    painter.setPen(QPen(QColor("#000000"))) # Black text for extreme contrast
+                    tw = metrics.horizontalAdvance(pos_str)
+                    painter.drawText(int(x_buys + (col_buys_w - tw)/2), y + int(th/3), pos_str)
                 else:
-                    painter.drawText(int(x_my_sells + (col_orders_w - tw)/2), y + int(th/3), pos_str)
+                    painter.fillRect(int(x_sells+1), box_y+1, int(col_sells_w-2), box_h-2, QColor("#ff3333")) # Neon Red
+                    painter.setPen(QPen(QColor("#ffffff"))) # White text
+                    tw = metrics.horizontalAdvance(pos_str)
+                    painter.drawText(int(x_sells + (col_sells_w - tw)/2), y + int(th/3), pos_str)
                 
             p += self.min_tick
 
+        # --- STICKY HEADERS ---
+        header_h = 24
+        header_bg = QColor("#004466") if self.is_armed else QColor(20, 20, 20, 255)
+        painter.fillRect(0, 0, w, header_h, header_bg) 
+        
+        painter.setFont(QFont("Consolas", 8, QFont.Weight.Bold))
+        painter.setPen(QPen(QColor("#cccccc") if self.is_armed else QColor("#888888")))
+        
+        def draw_header(text, x, width):
+            tw = metrics.horizontalAdvance(text)
+            painter.drawText(int(x + (width - tw)/2), 16, text)
+
+        draw_header("BUY", x_buys, col_buys_w)
+        draw_header("BID", x_bids, col_bids_w)
+        draw_header("PRICE", x_price, col_price_w)
+        draw_header("ASK", x_asks, col_asks_w)
+        draw_header("SEL", x_sells, col_sells_w)
+        draw_header("LVL", x_levels, col_levels_w)
+        
+        painter.setPen(QPen(QColor("#444444") if not self.is_armed else QColor("#0088aa")))
+        painter.drawLine(0, header_h, w, header_h)
+
+
+# REPLACE
 class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
-        self.setWindowTitle("MJÖLNIR MICRO-DOM")
+        self.setWindowTitle("MJÖLNIR DOM")
         self.resize(450, 800) 
         self.setStyleSheet("background-color: #151515;")
         self.manager = parent.manager if parent else None
+        self.main_gui = parent 
         
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5); layout.setSpacing(5)
+        layout.setContentsMargins(5, 5, 5, 5)
+        layout.setSpacing(0) 
         
-        self.header = QLabel("MICRO-DOM (STANDBY)")
-        self.header.setStyleSheet("color: #888; font-family: Consolas; font-weight: bold;")
+        self.header = QLabel()
+        self.header.setTextFormat(Qt.TextFormat.RichText)
+        self.header.setText("<b><span style='color: #888888;'>DOM</span></b> &nbsp;|&nbsp; <b><span style='color: #555555;'>STANDBY</span></b>")
+        self.header.setStyleSheet("background-color: #151515; font-family: Consolas; font-size: 10pt; padding: 4px; border-top-left-radius: 4px; border-top-right-radius: 4px;")
         self.header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.header)
         
         self.dom_widget = DOMWidget()
         layout.addWidget(self.dom_widget, stretch=1)
         
-        # Footer med Zoom och Synliga Punkter
         footer_layout = QHBoxLayout()
+        footer_layout.setContentsMargins(0, 5, 0, 0)
+        
+        self.btn_arm = QPushButton("SAFE")
+        self.btn_arm.setCheckable(True)
+        self.btn_arm.setFixedSize(65, 25)
+        self.btn_arm.setStyleSheet("background-color: #222222; color: #aaaaaa; font-family: Consolas; font-weight: bold; font-size: 8pt; border-radius: 4px; border: 1px solid #444444;")
+        self.btn_arm.clicked.connect(self.toggle_main_arm)
+        
         lbl_scale = QLabel("ZOOM:")
-        lbl_scale.setStyleSheet("color: #666; font-family: Consolas; font-size: 8pt;")
+        lbl_scale.setStyleSheet("color: #cccccc; font-family: Consolas; font-size: 8pt; font-weight: bold;")
         
         self.slider_scale = QSlider(Qt.Orientation.Horizontal)
-        # GUARD RAILS: Låser zoomen mellan 30 och 150 px/poäng för att skydda grafiken
         self.slider_scale.setRange(8, 80) 
         self.slider_scale.setValue(80)
+        self.slider_scale.setFixedWidth(60)
         self.slider_scale.valueChanged.connect(self.on_scale_changed)
         
-        self.lbl_points = QLabel("PTS: --")
-        self.lbl_points.setStyleSheet("color: #555; font-family: Consolas; font-size: 8pt;")
+        self.lbl_points = QLabel("(-- pts)")
+        self.lbl_points.setFixedWidth(80) 
+        self.lbl_points.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.lbl_points.setStyleSheet("color: #cccccc; font-family: Consolas; font-size: 8pt; font-weight: bold; margin-left: 5px;")
         
-        self.btn_center = QPushButton("CENTER")
-        self.btn_center.setFixedSize(60, 25)
-        self.btn_center.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-family: Consolas;")
-        self.btn_center.clicked.connect(self.recenter)
+        self.btn_clear_levels = QPushButton("CLR LVLS")
+        self.btn_clear_levels.setFixedSize(65, 25) 
+        self.btn_clear_levels.setStyleSheet("background-color: #222; color: #cccccc; border: 1px solid #444; font-family: Consolas; font-size: 8pt; border-radius: 4px;")
+        self.btn_clear_levels.clicked.connect(self.clear_manual_levels)
         
+        footer_layout.addWidget(self.btn_arm)
+        footer_layout.addStretch()         
         footer_layout.addWidget(lbl_scale)
         footer_layout.addWidget(self.slider_scale)
         footer_layout.addWidget(self.lbl_points)
-        footer_layout.addStretch()
-        footer_layout.addWidget(self.btn_center)
+        footer_layout.addStretch()         
+        footer_layout.addWidget(self.btn_clear_levels) 
+        
         layout.addLayout(footer_layout)
-        
-        self._auto_center = True
-        
-        # LOKAL HOTKEY: SPACEBAR (Triggas bara när fönstret är i fokus)
-        self.shortcut_center = QShortcut(QKeySequence("Space"), self)
-        self.shortcut_center.activated.connect(self.recenter)
+
+    def toggle_main_arm(self):
+        if self.main_gui and hasattr(self.main_gui, 'btn_arm'):
+            self.main_gui.btn_arm.click()
+            
+    def clear_manual_levels(self):
+        self.dom_widget.manual_levels.clear()
+        self.dom_widget.update()
 
     def update_points_label(self):
         if self.dom_widget.pixels_per_point > 0:
             pts = self.dom_widget.height() / self.dom_widget.pixels_per_point
-            self.lbl_points.setText(f"SPAN: {pts:.1f} pts")
+            self.lbl_points.setText(f"({pts:.1f} pts)")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -336,8 +519,10 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.update()
         
     def recenter(self):
-        self._auto_center = True
         self.update_dom({'price': self.manager.current_price if self.manager else 0.0}, self.dom_widget.min_tick)
+        if self.dom_widget.current_price > 0:
+            self.dom_widget.center_price = self.dom_widget.current_price
+            self.dom_widget.update()
         
     def update_dom(self, data, min_tick):
         self.dom_widget.min_tick = min_tick
@@ -349,45 +534,56 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.bid_size = data.get('bid_size', 0)
         self.dom_widget.ask_size = data.get('ask_size', 0)
         
-        # NYTT: Hämta position och räkna ut visnings-snittpris (Sämsta tick)
+        is_armed = data.get('is_armed', False)
+        self.dom_widget.is_armed = is_armed
+        
+        self.btn_arm.setChecked(is_armed)
+        if is_armed:
+            self.btn_arm.setText("ARMED")
+            self.btn_arm.setStyleSheet("background-color: #004466; color: white; font-family: Consolas; font-weight: bold; font-size: 8pt; border-radius: 4px; border: 1px solid #0088aa;")
+            self.header.setStyleSheet("background-color: #004466; font-family: Consolas; font-size: 10pt; padding: 4px; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        else:
+            self.btn_arm.setText("SAFE")
+            self.btn_arm.setStyleSheet("background-color: #222222; color: #aaaaaa; font-family: Consolas; font-weight: bold; font-size: 8pt; border-radius: 4px; border: 1px solid #444444;")
+            self.header.setStyleSheet("background-color: #151515; font-family: Consolas; font-size: 10pt; padding: 4px; border-top-left-radius: 4px; border-top-right-radius: 4px;")
+        
         self.dom_widget.pos_qty = data.get('pos', 0)
         raw_avg = data.get('avg', 0.0)
         
         if self.dom_widget.pos_qty > 0:
-            # Lång: Sämre pris är HÖGRE. Vi avrundar UPPÅT (ceil)
             display_avg = math.ceil(raw_avg / min_tick) * min_tick
         elif self.dom_widget.pos_qty < 0:
-            # Kort: Sämre pris är LÄGRE. Vi avrundar NEDÅT (floor)
             display_avg = math.floor(raw_avg / min_tick) * min_tick
         else:
             display_avg = 0.0
             
         self.dom_widget.avg_price = round(display_avg, 4)
         
+        # Uppdatera båda typerna av ordrar från Mjölnir
         self.dom_widget.my_buys = data.get('my_buys', {})
         self.dom_widget.my_sells = data.get('my_sells', {})
+        self.dom_widget.my_stop_buys = data.get('my_stop_buys', {})   # NYTT
+        self.dom_widget.my_stop_sells = data.get('my_stop_sells', {}) # NYTT
         
-        if self._auto_center and current > 0:
+        self.dom_widget.pending_sl_nudge = data.get('pending_sl_nudge', 0.0)
+        self.dom_widget.pending_sl_side = data.get('pending_sl_side', None)
+        
+        if getattr(self, '_auto_center', True) and current > 0:
             self.dom_widget.center_price = current
             self._auto_center = False 
             
         self.dom_widget.update()
 
-    # --- THE PRO FLOW: Musens scrollhjul ---
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         if delta == 0: return
 
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
-            # ZOOM: Ctrl + Scrollhjul
             step = 5 if delta > 0 else -5
             new_val = self.slider_scale.value() + step
-            self.slider_scale.setValue(new_val) # Setter kallas automatiskt, clamping sker i setRange
+            self.slider_scale.setValue(new_val) 
         else:
-            # PANORERING: Vanlig scroll flyttar stegen
-            self._auto_center = False # Lås stegen direkt så den inte hoppar tillbaka
-            
-            # (delta är ofta +-120). 4 ticks motsvarar exakt 1.0 poäng för MNQ.
+            self._auto_center = False 
             points_to_move = (delta / 120.0) * (self.dom_widget.min_tick * 4) 
             
             if self.dom_widget.center_price > 0:
@@ -843,7 +1039,7 @@ class SentinelManager(QObject):
             if p.is_connected(): p.modify_order('SL', exact_sl)
         self.log_signal.emit(f"CADET: SL Locked to pure fill ({exact_sl})")
         
-
+    # MODIFIED: Belongs to class SentinelManager
     def update_ui_state(self):
         open_orders = 0
         order_details = []
@@ -859,7 +1055,6 @@ class SentinelManager(QObject):
         elif self.pos_qty < 0: 
             target_action = "BUY"
         else:
-            # Vi är flat. Leta efter en väntande Limit-order i TWS.
             for p in self.providers:
                 if p.is_connected() and p.contract:
                     for t in p.ib.openTrades():
@@ -909,7 +1104,7 @@ class SentinelManager(QObject):
         # ==========================================
         has_multiple_sl = False
         expected_sl = 0.0 
-        current_active_sl = 0.0 # NYTT: Håller koll på var vår faktiska SL ligger
+        current_active_sl = 0.0 
 
         if pending_anchor > 0.0:
             expected_sl = round(round((pending_anchor - (self.sl_points * pending_direction)) / self.min_tick) * self.min_tick, 4)
@@ -918,18 +1113,15 @@ class SentinelManager(QObject):
             master_sl = active_stops[0]
             current_active_sl = master_sl['price']
 
-            # A. MAGNETIC BRACKET (Innan fyllning)
             if self.pos_qty == 0 and pending_anchor > 0.0:
                 if getattr(self, '_last_pending_anchor', 0.0) != pending_anchor:
                     self._last_pending_anchor = pending_anchor
-
                     if abs(master_sl['price'] - expected_sl) > (self.min_tick * 0.1):
                         for p in self.providers:
                             if p.is_connected():
                                 p.modify_order('SL', expected_sl)
                                 self.log_signal.emit(f"MAGNETIC: Snapped pending SL to {self.sl_points:.2f} pts.")
 
-            # B. QTY-SYNC (Efter fyllning)
             elif self.pos_qty != 0:
                 self._last_pending_anchor = 0.0 
                 if master_sl['qty'] != abs(self.pos_qty):
@@ -938,7 +1130,6 @@ class SentinelManager(QObject):
                             p.modify_order('SL', master_sl['price'], new_qty=abs(self.pos_qty))
                             self.log_signal.emit(f"SYNC: Adjusted Master SL to {abs(self.pos_qty)} contracts.")
 
-            # C. STÄDPATRULLEN (Auto-Merge)
             if len(active_stops) > 1:
                 has_multiple_sl = True
                 for extra_sl in active_stops[1:]:
@@ -951,7 +1142,7 @@ class SentinelManager(QObject):
             current_active_sl = expected_sl
 
         # ==========================================
-        # NY LOGIK: BERÄKNA SECURED PROFIT ELLER RISK
+        # BERÄKNA SECURED PROFIT ELLER RISK
         # ==========================================
         secured_pts = 0.0
         if self.pos_qty != 0:
@@ -963,8 +1154,6 @@ class SentinelManager(QObject):
         else:
             secured_pts = -self.sl_points
 
-
-
         bid_p, ask_p, bid_s, ask_s = 0.0, 0.0, 0, 0
         for p in self.providers:
             if p.is_connected() and hasattr(p, 'mkt_data') and p.mkt_data:
@@ -974,38 +1163,56 @@ class SentinelManager(QObject):
                 ask_s = p.mkt_data.askSize if p.mkt_data.askSize and not math.isnan(p.mkt_data.askSize) else 0
 
         # ==========================================
-        # NY LOGIK: KARTLÄGG VÄNTANDE ORDRAR FÖR DOM
+        # NY LOGIK: SORTERA LIMITS vs STOPS FÖR DOM
         # ==========================================
         working_buys = {}
         working_sells = {}
+        working_stops_buy = {}  # NYTT
+        working_stops_sell = {} # NYTT
         
         for p in self.providers:
-            # Säkerställ att vi är uppkopplade och har ett instrument valt
             if p.is_connected() and p.contract:
                 for trade in p.ib.openTrades():
-                    # VIKTIGT: Visa bara ordrar för DETTA instrumentet
                     if trade.contract.conId == p.contract.conId:
                         if trade.orderStatus.status not in ['Filled', 'Cancelled', 'Inactive', 'ApiCancelled']:
                             side = trade.order.action
                             qty = trade.order.totalQuantity - trade.orderStatus.filled
                             
-                            # Rätt pris beroende på ordertyp (Precis som i PnL-logiken)
-                            if trade.order.orderType in ['STP', 'STP LMT', 'TRAIL']:
+                            is_stop = trade.order.orderType in ['STP', 'STP LMT', 'TRAIL']
+                            if is_stop:
                                 raw_p = getattr(trade.order, 'auxPrice', 0.0)
                             else:
                                 raw_p = getattr(trade.order, 'lmtPrice', 0.0)
                                 
-                            # Filtrera bort IBKRs "Infinity"-tal
                             price_lvl = raw_p if (raw_p and 0 < raw_p < 1e100) else 0.0
                             
                             if price_lvl > 0 and qty > 0:
-                                # Snäpp till närmaste tick för att matcha DOM-skalan (Rundat för säkerhet)
                                 p_snap = round(round(price_lvl / self.min_tick) * self.min_tick, 4)
-                                if side == 'BUY':
-                                    working_buys[p_snap] = working_buys.get(p_snap, 0) + int(qty)
+                                if is_stop:
+                                    if side == 'BUY':
+                                        working_stops_buy[p_snap] = working_stops_buy.get(p_snap, 0) + int(qty)
+                                    else:
+                                        working_stops_sell[p_snap] = working_stops_sell.get(p_snap, 0) + int(qty)
                                 else:
-                                    working_sells[p_snap] = working_sells.get(p_snap, 0) + int(qty)
+                                    if side == 'BUY':
+                                        working_buys[p_snap] = working_buys.get(p_snap, 0) + int(qty)
+                                    else:
+                                        working_sells[p_snap] = working_sells.get(p_snap, 0) + int(qty)
 
+        # --- GHOST ORDER LOGIC ---
+        pending_sl_nudge = self.pending_nudges.get('SL', 0.0)
+        pending_sl_side = None
+        if pending_sl_nudge > 0.0:
+            if self.pos_qty > 0: pending_sl_side = 'SELL'
+            elif self.pos_qty < 0: pending_sl_side = 'BUY'
+            elif target_action: pending_sl_side = target_action
+
+            if current_active_sl > 0.0:
+                old_sl_snap = round(round(current_active_sl / self.min_tick) * self.min_tick, 4)
+                if pending_sl_side == 'SELL' and old_sl_snap in working_stops_sell:
+                    del working_stops_sell[old_sl_snap]
+                elif pending_sl_side == 'BUY' and old_sl_snap in working_stops_buy:
+                    del working_stops_buy[old_sl_snap]
 
         data = {
             'pos': int(self.pos_qty), 'avg': self.avg_price, 'price': self.current_price,
@@ -1025,8 +1232,10 @@ class SentinelManager(QObject):
             'grace_remaining': getattr(self, 'grace_time_remaining', 0),
             'secured_pts': secured_pts,
             'bid': bid_p, 'ask': ask_p, 'bid_size': bid_s, 'ask_size': ask_s,
-            # NYTT: Data för The Jigsaw Layout
-            'my_buys': working_buys, 'my_sells': working_sells 
+            'my_buys': working_buys, 'my_sells': working_sells,
+            'my_stop_buys': working_stops_buy, 'my_stop_sells': working_stops_sell, # NYTT
+            'pending_sl_nudge': pending_sl_nudge, 
+            'pending_sl_side': pending_sl_side    
         }
 
         if self.pos_qty != 0:
@@ -1035,6 +1244,7 @@ class SentinelManager(QObject):
             data['pl'] = (self.current_price - self.avg_price) * direction
 
         self.ui_update.emit(data)
+    
 
     def handle_price(self, p):
         self.current_price = p
@@ -1043,16 +1253,21 @@ class SentinelManager(QObject):
             return
             
         direction = 1 if self.pos_qty > 0 else -1
+        
         if self.peak_price == 0.0: self.peak_price = p
         else: self.peak_price = max(self.peak_price, p) if direction == 1 else min(self.peak_price, p)
 
-        # NYTT: VIRTUAL TP LOGIK
+        # VIRTUAL TP LOGIK
         if self.use_virtual_tp and self.virtual_tp > 0.0 and not self.turbo_mode:
             if (direction == 1 and p >= self.virtual_tp) or (direction == -1 and p <= self.virtual_tp):
                 self.log_signal.emit(f"🎯 VIRTUAL TP HIT ({self.virtual_tp:.2f}): Activating Turbo Trail!")
                 self.trail_active = True
                 self.turbo_mode = True
                 self.current_trail_distance = self.tight_trail_points
+                
+                # THE FIX: Nollställ peak till nuvarande pris vid aktivering!
+                self.peak_price = p 
+                
                 self.process_trailing_stop()
 
         if self.trail_active: self.process_trailing_stop()
@@ -1084,19 +1299,21 @@ class SentinelManager(QObject):
                         if current_p: p.modify_order(target_ref, current_p, new_qty=abs(self.pos_qty))
 
 
-    # REPLACE
     def process_trailing_stop(self):
+        # Ren och skär matte nu när baseline (peak) är korrekt uppsatt
+        if self.pos_qty == 0: return
         direction = 1 if self.pos_qty > 0 else -1
+        
         target_sl = round(round((self.peak_price - (self.current_trail_distance * direction)) / self.min_tick) * self.min_tick, 4)
         
         for p in self.providers:
             if p.is_connected():
-                # Kolla om vi redan har ett pending target i kön som är bättre, annars hämta från IBKR
                 current_sl = self.pending_nudges.get('SL', p.get_order_price('SL'))
                 
                 if current_sl and ((direction == 1 and target_sl > current_sl) or (direction == -1 and target_sl < current_sl)):
                     self.pending_nudges['SL'] = target_sl
-                    self.nudge_timer.start(400) # Skjuter upp API-anropet för att förhindra spam
+                    self.nudge_timer.start(400)
+
 
     def handle_error(self, c, m):
         self.log_signal.emit(f"API ERROR [{c}]: {m}")
@@ -1237,13 +1454,19 @@ class SentinelManager(QObject):
         if self.pos_qty == 0: return
         if not self.trail_active:
             self.trail_active, self.turbo_mode = True, False
+            # Här gjorde vi redan rätt för the normal trail
             self.peak_price, self.current_trail_distance = self.current_price, self.trail_points
             self.log_signal.emit(f"TRAIL ACTIVE: {self.trail_points} pts.")
         elif not self.turbo_mode:
             self.turbo_mode, self.current_trail_distance = True, self.tight_trail_points
+            
+            # THE FIX: Nollställ peak till nuvarande pris vid manuell Turbo-aktivering!
+            self.peak_price = self.current_price 
+            
             self.log_signal.emit(f"TURBO ACTIVE: {self.tight_trail_points} pts.")
             self.process_trailing_stop()
         self.update_ui_state()
+        
 
     def nudge_order(self, order_type: str, price_ticks: int):
         # 1. RETREAT LOCK GUARD RAIL
@@ -1299,26 +1522,23 @@ class SentinelManager(QObject):
 
             # 4. UPPDATERA MJÖLNIRS MINNE OCH TRAIL-LOGIK
             if not is_live_nudge:
-                # Uppdatera bas-parametrarna om vi är platta (Planerad Risk)
                 if order_type == 'SL':
                     self.sl_points = max(self.min_tick, self.sl_points - (price_ticks * self.min_tick))
                 elif order_type == 'TP':
                     self.tp_points = max(self.min_tick, self.tp_points + (price_ticks * self.min_tick))
-                self.update_ui_state()
             else:
                 # --- THE SMART TRAIL SYNC ---
-                # Om vi är i en Live-trade och Trail är aktiv, och vi tvingar SL närmare...
                 if self.trail_active and order_type == 'SL':
                     new_dist = (self.peak_price - exact_price) * direction
                     if new_dist > 0:
                         self.current_trail_distance = new_dist
                         self.log_signal.emit(f"⚙️ TRAIL SYNC: Tighter distance set ({new_dist:.2f} pts)")
-                        # Tvinga HUD att uppdatera "Trail Config Bar" omedelbart
-                        QTimer.singleShot(100, self.update_ui_state)
 
             self.pending_nudges[order_type] = exact_price
             self.nudge_timer.start(400)
             self._pending_log_type = order_type
+            
+        self.update_ui_state() # NYTT: Tvingar fram ghost order i DOMen direkt utan dröjsmål!
 
     def commit_nudges(self):
         # 1. Utför API-anropet till IBKR
@@ -1364,6 +1584,7 @@ class SentinelManager(QObject):
         self.update_ui_state()
 
 
+# REPLACE
 class GlobalHotkeyManager(QObject):
     sig_arm = pyqtSignal()
     sig_trade = pyqtSignal(str)
@@ -1372,17 +1593,18 @@ class GlobalHotkeyManager(QObject):
     sig_be = pyqtSignal()
     sig_nudge = pyqtSignal(str, int)
     
-    # NYA SIGNALER
+    # SNIPER & DOM SIGNALS
     sig_join_bid = pyqtSignal()
     sig_join_ask = pyqtSignal()
     sig_cancel_working = pyqtSignal()
+    sig_recenter_dom = pyqtSignal() # NEW: Global signal to recenter DOM
 
     def __init__(self, gui):
         super().__init__()
         self.gui = gui
         self.manager = gui.manager
         
-        # 1. Koppla signalerna (Dessa skickas nu 100% säkert till huvud-GUI-tråden)
+        # 1. Connect signals to UI/Manager
         self.sig_arm.connect(self.gui.btn_arm.click)
         self.sig_trade.connect(self.manager.execute_trade)
         self.sig_close.connect(self.manager.execute_close)
@@ -1390,7 +1612,7 @@ class GlobalHotkeyManager(QObject):
         self.sig_be.connect(self.manager.execute_be_move)
         self.sig_nudge.connect(self.manager.nudge_order)
         
-        # 2. Sätt upp de globala lyssnarna som skickar signalerna
+        # 2. Setup the global keyboard hooks
         keyboard.add_hotkey('ctrl+shift+a', self.sig_arm.emit)
         keyboard.add_hotkey('ctrl+shift+b', lambda: self.sig_trade.emit("BUY"))
         keyboard.add_hotkey('ctrl+shift+s', lambda: self.sig_trade.emit("SELL"))
@@ -1402,10 +1624,13 @@ class GlobalHotkeyManager(QObject):
         keyboard.add_hotkey('ctrl+shift+I', lambda: self.sig_nudge.emit('SL', -1))
         keyboard.add_hotkey('ctrl+shift+K', lambda: self.sig_nudge.emit('SL', 1))
         
-        # SNIPER HOTKEYS (Direkt till emit!)
+        # SNIPER HOTKEYS
         keyboard.add_hotkey('ctrl+shift+F5', self.sig_join_bid.emit)
         keyboard.add_hotkey('ctrl+shift+F6', self.sig_join_ask.emit)
         keyboard.add_hotkey('ctrl+shift+F7', self.sig_cancel_working.emit)
+        
+        # NEW: DOM HOTKEYS
+        keyboard.add_hotkey('ctrl+shift+F12', self.sig_recenter_dom.emit)
 
 
 # =============================================================================
@@ -1685,9 +1910,7 @@ class MjolnirGUI(QWidget):
         # (Längst ner i init_ui)
         self.inspector_window = TWSInspectorWindow(self)
         self.dom_window = MjolnirDOMWindow(self) 
-        
-        self.shortcut_center_main = QShortcut(QKeySequence("Space"), self)
-        self.shortcut_center_main.activated.connect(self.dom_window.recenter)
+
 
         main_layout.addWidget(self.left_panel, stretch=1); main_layout.addLayout(right_layout, stretch=1); self.setLayout(main_layout)
 
@@ -2155,6 +2378,7 @@ class MjolnirGUI(QWidget):
         self.manager.update_ui_state()
 
 
+    # MODIFIED: Belongs to class MjolnirGUI
     def setup_connections(self):
         self.manager.log_signal.connect(self.update_log)
         self.manager.ui_update.connect(self.update_hud)
@@ -2167,6 +2391,9 @@ class MjolnirGUI(QWidget):
         self.global_hotkeys.sig_join_bid.connect(self.manager.execute_join_bid)
         self.global_hotkeys.sig_join_ask.connect(self.manager.execute_join_ask)
         self.global_hotkeys.sig_cancel_working.connect(self.manager.execute_cancel_working)
+        
+        # NEW: Connect the global hotkey directly to the DOM window's recenter function
+        self.global_hotkeys.sig_recenter_dom.connect(self.dom_window.recenter)
 
     def blink_sl_warning(self):
         # Visuell smäll på fingrarna vid felaktig SL flytt!

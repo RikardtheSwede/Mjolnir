@@ -1,10 +1,11 @@
 {
     "last_connection": "GATEWAY PAPER (4002)",
-    "last_instrument": "OMXS30",
+    "last_instrument": "MES",
     "use_virtual_tp": false,
     "dom_scales": {
         "MES": 80,
-        "OMXS30": 80
+        "OMXS30": 80,
+        "MNQ": 80
     },
     "dom_height": 800
 }
