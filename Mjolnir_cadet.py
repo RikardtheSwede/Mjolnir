@@ -19,12 +19,15 @@ logging.getLogger('ib_async').setLevel(logging.CRITICAL)
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional
 
+# MODIFIED: [UPPGIFT 1 - Lade till QLineEdit]
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFrame, QComboBox, 
                              QStackedWidget, QProgressBar, QSlider, QCheckBox, QTextBrowser,
-                             QInputDialog) 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect, QPoint
-from PyQt6.QtGui import QKeySequence, QShortcut, QPainter, QColor, QPen, QFont, QPolygon
+                             QInputDialog, QLineEdit) 
+# MODIFIED: [UPPGIFT 1 - Lade till QEvent]
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect, QPoint, QEvent
+# MODIFIED: [UPPGIFT 1 - Lade till QFontMetrics]
+from PyQt6.QtGui import QKeySequence, QShortcut, QPainter, QColor, QPen, QFont, QPolygon, QFontMetrics
 from ib_async import *
 
 
@@ -128,7 +131,6 @@ class DOMWidget(QWidget):
     sig_dom_join_bid = pyqtSignal()
     sig_dom_join_ask = pyqtSignal()
 
-    # NEW: [UPPGIFT 1 - Signal för nivå-uppdatering]
     sig_dom_update_level = pyqtSignal(float, str, str) # (pris, text, action)
 
     sig_dom_place_order = pyqtSignal(str, str, float)
@@ -176,11 +178,54 @@ class DOMWidget(QWidget):
         
         # Manuealla nivåer (LVL) skickas från managern
         self.manual_levels = {}
-        # NEW: [UPPGIFT 3 - Auto-Levels dict i DOM]
         self.auto_levels = {}
         self.is_armed = False 
         
+        # NEW: [UPPGIFT 1 - Hållare för aktiv inline-editor]
+        self.active_editor = None
+        
         self.setStyleSheet("background-color: #0d0d0d;")
+
+    # NEW: [UPPGIFT 1 - Event filter för inline edit (ESC och FocusOut)]
+    def eventFilter(self, obj, event):
+        if self.active_editor and obj is self.active_editor:
+            if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+                self._close_inline_editor()
+                return True
+            elif event.type() == QEvent.Type.FocusOut:
+                self._close_inline_editor()
+                return True
+        return super().eventFilter(obj, event)
+
+    # NEW: [UPPGIFT 1 - Skapa inline-editor för LVL-cell]
+    def spawn_inline_edit(self, price, current_text, rect):
+        if self.active_editor:
+            self._close_inline_editor()
+
+        self.active_editor = QLineEdit(self)
+        self.active_editor.setText(current_text)
+        self.active_editor.setGeometry(rect)
+        self.active_editor.setStyleSheet("background-color: #1a1a1a; color: white; border: none; font-family: Consolas; font-size: 8pt;")
+        self.active_editor.installEventFilter(self)
+        
+        def on_return():
+            new_text = self.active_editor.text()
+            self.manual_levels[price] = new_text
+            self.sig_dom_update_level.emit(price, new_text, "EDIT")
+            self.update()
+            self._close_inline_editor()
+
+        self.active_editor.returnPressed.connect(on_return)
+        self.active_editor.show()
+        self.active_editor.setFocus()
+        self.active_editor.selectAll()
+
+    # NEW: [UPPGIFT 1 - Stängningshjälp för inline-editor]
+    def _close_inline_editor(self):
+        if self.active_editor:
+            self.active_editor.deleteLater()
+            self.active_editor = None
+            self.setFocus()
 
     def update_geometry_map(self): 
         """Beräknar x-koordinater för alla kolumner baserat på center_x."""
@@ -223,7 +268,6 @@ class DOMWidget(QWidget):
         is_short = self.pos_qty < 0 or (self.pos_qty == 0 and self.pending_anchor > 0 and self.pending_direction == -1)
         is_flat = self.pos_qty == 0 and self.pending_anchor == 0
 
-        # MODIFIED: [UPPGIFT 1 - Ersatt direkt LVL-ändring med signaler och optimistisk uppdatering]
         if self.col_x['lvl'] <= x <= w:
             tolerance = 2.0
             target_price = None
@@ -232,7 +276,6 @@ class DOMWidget(QWidget):
                     target_price = lp
                     break
 
-            # NEW: [UPPGIFT 3 - Skydda Auto-Levels från klick]
             is_auto_level = False
             for ap in self.auto_levels.keys():
                 if abs(ap - clicked_price) <= (tolerance + 1e-9):
@@ -244,29 +287,44 @@ class DOMWidget(QWidget):
 
             if event.button() == Qt.MouseButton.RightButton:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                    # NEW: [UPPGIFT 1 - Optimistisk uppdatering lokalt (CLEAR)]
                     self.manual_levels.clear()
                     self.sig_dom_update_level.emit(0.0, "", "CLEAR")
                 elif target_price is not None:
-                    # NEW: [UPPGIFT 1 - Optimistisk uppdatering lokalt (DELETE)]
                     self.manual_levels.pop(target_price, None)
                     self.sig_dom_update_level.emit(target_price, "", "DELETE")
                 return
 
             if event.button() == Qt.MouseButton.LeftButton:
+                # MODIFIED: [UPPGIFT 1 - Ersatt QInputDialog med dynamisk spawn_inline_edit]
                 if target_price is not None:
-                    # Edit Logic via Dialog
-                    new_text, ok = QInputDialog.getText(self, "Level Note", "Text:", text=self.manual_levels[target_price])
-                    if ok:
-                        # MODIFIED: [UPPGIFT 3 - Robust Input Dialog med update()]
-                        self.manual_levels[target_price] = new_text
-                        self.sig_dom_update_level.emit(target_price, new_text, "EDIT")
-                        self.update()
+                    price_diff_target = target_price - self.center_price
+                    y_target = center_y - (price_diff_target * self.pixels_per_point)
+                    
+                    painter_font = QFont("Consolas", 8, QFont.Weight.Bold) if self.pixels_per_point < 18 else QFont("Consolas", 10, QFont.Weight.Bold)
+                    th = QFontMetrics(painter_font).height()
+                    row_height = self.pixels_per_point * self.min_tick
+                    
+                    box_y = int(y_target - max(row_height, th + 4)/2)
+                    box_h = int(max(row_height, th + 4))
+                    
+                    rect = QRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h)
+                    self.spawn_inline_edit(target_price, self.manual_levels[target_price], rect)
                 else:
-                    # Lägg till ny nivå
-                    # MODIFIED: [UPPGIFT 1 - Optimistisk uppdatering lokalt (ADD)]
                     self.manual_levels[clicked_price] = "NEW"
                     self.sig_dom_update_level.emit(clicked_price, "NEW", "ADD")
+                    
+                    price_diff_target = clicked_price - self.center_price
+                    y_target = center_y - (price_diff_target * self.pixels_per_point)
+                    
+                    painter_font = QFont("Consolas", 8, QFont.Weight.Bold) if self.pixels_per_point < 18 else QFont("Consolas", 10, QFont.Weight.Bold)
+                    th = QFontMetrics(painter_font).height()
+                    row_height = self.pixels_per_point * self.min_tick
+                    
+                    box_y = int(y_target - max(row_height, th + 4)/2)
+                    box_h = int(max(row_height, th + 4))
+                    
+                    rect = QRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h)
+                    self.spawn_inline_edit(clicked_price, "NEW", rect)
                 return
 
         # Tyst Flatten vid högerklick i prisstapeln
@@ -501,7 +559,6 @@ class DOMWidget(QWidget):
                 painter.setPen(current_pen)
                 painter.drawLine(0, y, w, y)
                 
-            # MODIFIED: [UPPGIFT 2 - Uppdaterad LVL-ritning med elided text från dict]
             if p_round in self.manual_levels:
                 dash_pen = QPen(QColor("#b388ff")) 
                 dash_pen.setStyle(Qt.PenStyle.DashLine)
@@ -517,7 +574,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(display_text)
                 painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), y + int(th/3), display_text)
             
-            # NEW: [UPPGIFT 3 - Rita ut Auto-Levels (VWAP etc)]
             if p_round in self.auto_levels:
                 gold_pen = QPen(QColor("#ffcc00"))
                 gold_pen.setStyle(Qt.PenStyle.DashLine)
@@ -753,12 +809,14 @@ class MjolnirDOMWindow(QWidget):
         self.header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.header_title, stretch=1)
         
-        # MODIFIED: [UPPGIFT 1 - Ersatt addSpacing med manuell sparningsknapp]
         self.btn_save_levels = QPushButton("💾")
         self.btn_save_levels.setFixedSize(35, 25)
         self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
+        
+        # MODIFIED: [UPPGIFT 2 - Koppla till on_save_clicked istället]
         if self.manager:
-            self.btn_save_levels.clicked.connect(self.manager.save_levels_to_disk)
+            self.btn_save_levels.clicked.connect(self.on_save_clicked)
+            
         header_layout.addWidget(self.btn_save_levels)
 
         layout.addWidget(self.header)
@@ -779,7 +837,6 @@ class MjolnirDOMWindow(QWidget):
             self.dom_widget.sig_dom_join_bid.connect(self.manager.execute_join_bid)
             self.dom_widget.sig_dom_join_ask.connect(self.manager.execute_join_ask)
             
-            # MODIFIED: [UPPGIFT 3 - Koppla samman LVL-uppdatering]
             self.dom_widget.sig_dom_update_level.connect(self.manager.handle_level_update)
         
         footer_layout = QHBoxLayout()
@@ -806,6 +863,19 @@ class MjolnirDOMWindow(QWidget):
         footer_layout.addStretch()         
         
         layout.addLayout(footer_layout)
+
+    # NEW: [UPPGIFT 2 - Metoder för sparning och knapp-blink]
+    def on_save_clicked(self):
+        if self.manager:
+            self.manager.save_levels_to_disk()
+            self.flash_save_button()
+
+    def flash_save_button(self):
+        self.btn_save_levels.setStyleSheet("background-color: #2e7d32; color: white; border: 1px solid #4caf50; border-radius: 4px;")
+        QTimer.singleShot(500, self.reset_save_button)
+
+    def reset_save_button(self):
+        self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
 
     def toggle_main_arm(self):
         if self.main_gui and hasattr(self.main_gui, 'btn_arm'):
@@ -889,7 +959,6 @@ class MjolnirDOMWindow(QWidget):
         
         # Uppdatera nivåer från managern
         self.dom_widget.manual_levels = data.get('manual_levels', {})
-        # NEW: [UPPGIFT 3 - Synka auto_levels]
         self.dom_widget.auto_levels = data.get('auto_levels', {})
 
         if getattr(self, '_auto_center', True) and current > 0:
@@ -1352,12 +1421,9 @@ class SentinelManager(QObject):
         self.tight_trail_points = 3.0
         self.current_trail_distance = 10.0
 
-        # NEW: [UPPGIFT 2 - Hantera nivåer centralt]
         self.manual_levels = {}
-        # NEW: [UPPGIFT 2 - Spara valt instrument]
         self.current_instrument_name = ""
         
-        # NEW: [UPPGIFT 3 - Auto-Levels dict]
         self.auto_levels = {}
 
         self.pending_nudges: Dict[str, float] = {}
@@ -1365,11 +1431,9 @@ class SentinelManager(QObject):
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
 
-    # NEW: [UPPGIFT 2 - Hantera filväg för JSON]
     def _get_levels_file_path(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "levels.json")
 
-    # NEW: [UPPGIFT 2 - Spara nivåer till disk]
     def save_levels_to_disk(self):
         if not self.current_instrument_name:
             return
@@ -1391,11 +1455,11 @@ class SentinelManager(QObject):
         except Exception as e:
             self.log_signal.emit(f"ERROR: Kunde inte spara levels - {str(e)}")
 
-    # NEW: [UPPGIFT 2 - Ladda nivåer från disk]
     def load_levels_from_disk(self):
         if not self.current_instrument_name:
             return
         path = self._get_levels_file_path()
+        # MODIFIED: [UPPGIFT 3 - Bekräftat att gamla nivåer rensas (clear) innan omladdning]
         self.manual_levels.clear()
         
         if os.path.exists(path):
@@ -1437,7 +1501,6 @@ class SentinelManager(QObject):
 
     def handle_contract_info(self, min_tick, multiplier):
         self.min_tick = min_tick
-        # NEW: [UPPGIFT 2 - Ladda nivåer när contract bekräftats]
         self.load_levels_from_disk()
 
     def handle_position(self, q, a):
@@ -1513,8 +1576,8 @@ class SentinelManager(QObject):
                 
         self.log_signal.emit(f"CADET: SL låst till exakt fyllnad ({exact_sl})")
         
-    # MODIFIED: [UPPGIFT 2 - Koppla loss automatisk sparning, sparning sker nu manuellt]
     def handle_level_update(self, price, text, action):
+        # MODIFIED: [UPPGIFT 3 - Bekräftat att ingen filsparning sker här. Endast i minnet.]
         if action == "ADD" or action == "EDIT":
             self.manual_levels[price] = text
         elif action == "DELETE":
@@ -1799,9 +1862,7 @@ class SentinelManager(QObject):
             'pending_sl_side': pending_sl_side,
             'virtual_tp': expected_tp if self.use_virtual_tp else 0.0,
             
-            # Passa ner managerns manual_levels dict för rendering
             'manual_levels': self.manual_levels,
-            # NEW: [UPPGIFT 3 - Skicka med auto_levels till UI]
             'auto_levels': self.auto_levels
         }
 
@@ -2717,7 +2778,6 @@ class MjolnirGUI(QWidget):
         self.setup_hotkeys()
         self.setup_connections()
         
-        # DOM som startfönster
         self.toggle_dom()
 
     def init_ui(self):
@@ -3089,7 +3149,6 @@ class MjolnirGUI(QWidget):
             
             data = self.instruments.get(name, {})
             self.active_instrument_name = name
-            # NEW: [UPPGIFT 2 - Sätt instrument-namn för json-sparande]
             self.manager.current_instrument_name = name
             self.manager.trade_qty = data.get("qty", 1)
             self.manager.tp_points = data.get("tp", 10.0)
@@ -3576,7 +3635,6 @@ class MjolnirGUI(QWidget):
             pass
 
     def closeEvent(self, event):
-        # NEW: [UPPGIFT 4 - Säkerhetssparning vid stängning]
         self.manager.save_levels_to_disk()
         self.save_settings()
         event.accept()
