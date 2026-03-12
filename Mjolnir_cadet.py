@@ -1,9 +1,7 @@
 # =============================================================================
 # PROJECT: MJÖLNIR TACTICAL HUD (IBKR EDITION)
-# VERSION: 4.0 - PEP8 COMPLIANT
-# ARCHITECT: Fred
+# VERSION: 0.9.5
 # STANDARDS: STRICT PEP8. NO SEMICOLONS. NO TRUNCATION.
-# INTEGRITY: MINIMUM 3400+ LINES. ALL MODIFICATIONS MUST BE MARKED.
 # =============================================================================
 
 import sys
@@ -134,11 +132,11 @@ class DOMWidget(QWidget):
     sig_dom_update_level = pyqtSignal(float, str, str) # (pris, text, action)
 
     sig_dom_place_order = pyqtSignal(str, str, float)
-    sig_dom_modify_qty = pyqtSignal(str, float)       
-    sig_dom_move_order = pyqtSignal(str, float)       
-    sig_dom_cancel_order = pyqtSignal(str, float)     
-    sig_dom_move_anchor_group = pyqtSignal(float)     
-    sig_dom_flatten_all = pyqtSignal()                
+    sig_dom_modify_qty = pyqtSignal(str, float)        
+    sig_dom_move_order = pyqtSignal(str, float)        
+    sig_dom_cancel_order = pyqtSignal(str, float)      
+    sig_dom_move_anchor_group = pyqtSignal(float)      
+    sig_dom_flatten_all = pyqtSignal()                 
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -178,6 +176,8 @@ class DOMWidget(QWidget):
         
         # Manuealla nivåer (LVL) skickas från managern
         self.manual_levels = {}
+        # NEW: [UPPGIFT 3 - Auto-Levels dict i DOM]
+        self.auto_levels = {}
         self.is_armed = False 
         
         self.setStyleSheet("background-color: #0d0d0d;")
@@ -223,7 +223,7 @@ class DOMWidget(QWidget):
         is_short = self.pos_qty < 0 or (self.pos_qty == 0 and self.pending_anchor > 0 and self.pending_direction == -1)
         is_flat = self.pos_qty == 0 and self.pending_anchor == 0
 
-        # MODIFIED: [UPPGIFT 1 - Ersatt direkt LVL-ändring med signaler]
+        # MODIFIED: [UPPGIFT 1 - Ersatt direkt LVL-ändring med signaler och optimistisk uppdatering]
         if self.col_x['lvl'] <= x <= w:
             tolerance = 2.0
             target_price = None
@@ -232,10 +232,24 @@ class DOMWidget(QWidget):
                     target_price = lp
                     break
 
+            # NEW: [UPPGIFT 3 - Skydda Auto-Levels från klick]
+            is_auto_level = False
+            for ap in self.auto_levels.keys():
+                if abs(ap - clicked_price) <= (tolerance + 1e-9):
+                    is_auto_level = True
+                    break
+
+            if target_price is None and is_auto_level:
+                return
+
             if event.button() == Qt.MouseButton.RightButton:
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    # NEW: [UPPGIFT 1 - Optimistisk uppdatering lokalt (CLEAR)]
+                    self.manual_levels.clear()
                     self.sig_dom_update_level.emit(0.0, "", "CLEAR")
                 elif target_price is not None:
+                    # NEW: [UPPGIFT 1 - Optimistisk uppdatering lokalt (DELETE)]
+                    self.manual_levels.pop(target_price, None)
                     self.sig_dom_update_level.emit(target_price, "", "DELETE")
                 return
 
@@ -244,9 +258,14 @@ class DOMWidget(QWidget):
                     # Edit Logic via Dialog
                     new_text, ok = QInputDialog.getText(self, "Level Note", "Text:", text=self.manual_levels[target_price])
                     if ok:
+                        # MODIFIED: [UPPGIFT 3 - Robust Input Dialog med update()]
+                        self.manual_levels[target_price] = new_text
                         self.sig_dom_update_level.emit(target_price, new_text, "EDIT")
+                        self.update()
                 else:
                     # Lägg till ny nivå
+                    # MODIFIED: [UPPGIFT 1 - Optimistisk uppdatering lokalt (ADD)]
+                    self.manual_levels[clicked_price] = "NEW"
                     self.sig_dom_update_level.emit(clicked_price, "NEW", "ADD")
                 return
 
@@ -498,6 +517,22 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(display_text)
                 painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), y + int(th/3), display_text)
             
+            # NEW: [UPPGIFT 3 - Rita ut Auto-Levels (VWAP etc)]
+            if p_round in self.auto_levels:
+                gold_pen = QPen(QColor("#ffcc00"))
+                gold_pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(gold_pen)
+                painter.drawLine(int(self.col_x['bid']), y, int(self.col_x['lvl']), y)
+                
+                painter.fillRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h, QColor(255, 204, 0, 40))
+                painter.fillRect(int(self.col_x['lvl']), box_y, 3, box_h, QColor("#ffcc00"))
+                
+                painter.setPen(QPen(QColor("#ffffff")))
+                label_auto = self.auto_levels.get(p_round, "AUTO")
+                display_text_auto = metrics.elidedText(label_auto, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 5))
+                tw_auto = metrics.horizontalAdvance(display_text_auto)
+                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), y + int(th/3), display_text_auto)
+            
             should_draw_text = False
             
             if row_height >= th * 1.2:
@@ -718,8 +753,13 @@ class MjolnirDOMWindow(QWidget):
         self.header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.header_title, stretch=1)
         
-        # Spacer för att hålla titeln centrerad trots knappen till vänster
-        header_layout.addSpacing(65)
+        # MODIFIED: [UPPGIFT 1 - Ersatt addSpacing med manuell sparningsknapp]
+        self.btn_save_levels = QPushButton("💾")
+        self.btn_save_levels.setFixedSize(35, 25)
+        self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
+        if self.manager:
+            self.btn_save_levels.clicked.connect(self.manager.save_levels_to_disk)
+        header_layout.addWidget(self.btn_save_levels)
 
         layout.addWidget(self.header)
         
@@ -849,6 +889,8 @@ class MjolnirDOMWindow(QWidget):
         
         # Uppdatera nivåer från managern
         self.dom_widget.manual_levels = data.get('manual_levels', {})
+        # NEW: [UPPGIFT 3 - Synka auto_levels]
+        self.dom_widget.auto_levels = data.get('auto_levels', {})
 
         if getattr(self, '_auto_center', True) and current > 0:
             self.dom_widget.center_price = current
@@ -1312,11 +1354,60 @@ class SentinelManager(QObject):
 
         # NEW: [UPPGIFT 2 - Hantera nivåer centralt]
         self.manual_levels = {}
+        # NEW: [UPPGIFT 2 - Spara valt instrument]
+        self.current_instrument_name = ""
+        
+        # NEW: [UPPGIFT 3 - Auto-Levels dict]
+        self.auto_levels = {}
 
         self.pending_nudges: Dict[str, float] = {}
         self.nudge_timer = QTimer()
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
+
+    # NEW: [UPPGIFT 2 - Hantera filväg för JSON]
+    def _get_levels_file_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "levels.json")
+
+    # NEW: [UPPGIFT 2 - Spara nivåer till disk]
+    def save_levels_to_disk(self):
+        if not self.current_instrument_name:
+            return
+        path = self._get_levels_file_path()
+        data = {}
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+            except Exception:
+                pass
+        
+        str_levels = {str(k): v for k, v in self.manual_levels.items()}
+        data[self.current_instrument_name] = str_levels
+        
+        try:
+            with open(path, 'w') as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            self.log_signal.emit(f"ERROR: Kunde inte spara levels - {str(e)}")
+
+    # NEW: [UPPGIFT 2 - Ladda nivåer från disk]
+    def load_levels_from_disk(self):
+        if not self.current_instrument_name:
+            return
+        path = self._get_levels_file_path()
+        self.manual_levels.clear()
+        
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                inst_data = data.get(self.current_instrument_name, {})
+                for k, v in inst_data.items():
+                    self.manual_levels[float(k)] = v
+            except Exception as e:
+                self.log_signal.emit(f"ERROR: Kunde inte ladda levels - {str(e)}")
+        self.update_ui_state()
 
     def _start_grace_period(self):
         self.sl_locked = False
@@ -1346,6 +1437,8 @@ class SentinelManager(QObject):
 
     def handle_contract_info(self, min_tick, multiplier):
         self.min_tick = min_tick
+        # NEW: [UPPGIFT 2 - Ladda nivåer när contract bekräftats]
+        self.load_levels_from_disk()
 
     def handle_position(self, q, a):
         if self.pos_qty != 0 and q == 0:
@@ -1420,7 +1513,7 @@ class SentinelManager(QObject):
                 
         self.log_signal.emit(f"CADET: SL låst till exakt fyllnad ({exact_sl})")
         
-    # NEW: [UPPGIFT 2 - Hantera nivåer centralt i managern]
+    # MODIFIED: [UPPGIFT 2 - Koppla loss automatisk sparning, sparning sker nu manuellt]
     def handle_level_update(self, price, text, action):
         if action == "ADD" or action == "EDIT":
             self.manual_levels[price] = text
@@ -1707,7 +1800,9 @@ class SentinelManager(QObject):
             'virtual_tp': expected_tp if self.use_virtual_tp else 0.0,
             
             # Passa ner managerns manual_levels dict för rendering
-            'manual_levels': self.manual_levels
+            'manual_levels': self.manual_levels,
+            # NEW: [UPPGIFT 3 - Skicka med auto_levels till UI]
+            'auto_levels': self.auto_levels
         }
 
         if self.pos_qty != 0:
@@ -2549,7 +2644,7 @@ class SentinelManager(QObject):
                                     p.ib.cancelOrder(t.order)
                                     self.log_signal.emit(f"DOM: Avbröt entré @ {price:.2f}")
                                 return
-                                                     
+                                                   
 class GlobalHotkeyManager(QObject):
     sig_arm = pyqtSignal()
     sig_trade = pyqtSignal(str)
@@ -2994,6 +3089,8 @@ class MjolnirGUI(QWidget):
             
             data = self.instruments.get(name, {})
             self.active_instrument_name = name
+            # NEW: [UPPGIFT 2 - Sätt instrument-namn för json-sparande]
+            self.manager.current_instrument_name = name
             self.manager.trade_qty = data.get("qty", 1)
             self.manager.tp_points = data.get("tp", 10.0)
             self.manager.saved_tp_points = self.manager.tp_points
@@ -3479,6 +3576,8 @@ class MjolnirGUI(QWidget):
             pass
 
     def closeEvent(self, event):
+        # NEW: [UPPGIFT 4 - Säkerhetssparning vid stängning]
+        self.manager.save_levels_to_disk()
         self.save_settings()
         event.accept()
 
