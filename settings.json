@@ -1,6 +1,6 @@
 {
     "last_connection": "GATEWAY PAPER (4002)",
-    "last_instrument": "MNQ",
+    "last_instrument": "DAX",
     "use_virtual_tp": true,
     "dom_scales": {
         "MES": 28,

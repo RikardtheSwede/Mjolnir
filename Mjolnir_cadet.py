@@ -197,6 +197,41 @@ class InstrumentDetailsWindow(QWidget):
         self.display_lbl.setText("".join(html))
 
 
+# NEW: [UPPGIFT 1 - Skapa fönstret DOMHelpWindow med extern filhantering]
+class DOMHelpWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Tool)
+        self.setWindowTitle("DOM OPERATOR MANUAL")
+        self.setFixedSize(450, 550)
+        self.setStyleSheet("background-color: #1a1a1a;")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        self.browser = QTextBrowser()
+        self.browser.setStyleSheet("background-color: #0d0d0d; color: #dddddd; font-family: Consolas; border: 1px solid #333;")
+        self.browser.setHtml(self._load_or_create_manual())
+        
+        layout.addWidget(self.browser)
+        
+    def _load_or_create_manual(self):
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dom_manual.html")
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                return f"<p style='color:red;'>Error reading manual: {str(e)}</p>"
+        else:
+            fallback_text = "<h2 style='color:#ff4444;'>Manual saknas</h2><p>Vänligen skapa eller redigera filen <b>dom_manual.html</b> i samma mapp som skriptet.</p>"
+            try:
+                with open(path, 'w', encoding='utf-8') as f:
+                    f.write(fallback_text)
+            except:
+                pass
+            return fallback_text
+
+
 class DOMWidget(QWidget):
     """Kärngrafikmotorn för Price Ladder - Pro Jigsaw Layout."""
     
@@ -819,7 +854,6 @@ class DOMWidget(QWidget):
                     
             p += self.min_tick
 
-        # NEW: [UPPGIFT 1 - Implementera Off-Screen Price Overlay]
         if self.current_price > 0:
             overlay_text = None
             overlay_y = 0
@@ -873,14 +907,23 @@ class MjolnirDOMWindow(QWidget):
         self.header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.header_title, stretch=1)
         
+        # MODIFIED: [UPPGIFT 2 - Justerad storlek på sparaknappen]
         self.btn_save_levels = QPushButton("💾")
-        self.btn_save_levels.setFixedSize(35, 25)
+        self.btn_save_levels.setFixedSize(25, 25)
         self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
         
         if self.manager:
             self.btn_save_levels.clicked.connect(self.on_save_clicked)
             
         header_layout.addWidget(self.btn_save_levels)
+
+        # NEW: [UPPGIFT 2 - Integrera hjälpknappen i DOM:en]
+        self.btn_help = QPushButton("?")
+        self.btn_help.setFixedSize(25, 25)
+        self.btn_help.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
+        self.help_window = DOMHelpWindow(self)
+        self.btn_help.clicked.connect(lambda: self.help_window.setVisible(not self.help_window.isVisible()))
+        header_layout.addWidget(self.btn_help)
 
         layout.addWidget(self.header)
         
