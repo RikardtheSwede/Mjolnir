@@ -135,8 +135,6 @@ class InstrumentDetailsWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # MODIFIED: UPPGIFT 1 - Removed duplicated header QLabel
-        
         self.display_lbl = QLabel("Waiting for data...")
         self.display_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.display_lbl.setStyleSheet("background-color: #0d0d0d; padding: 5px; border: 1px solid #333;")
@@ -185,7 +183,6 @@ class InstrumentDetailsWindow(QWidget):
         else:
             html.append("&nbsp;Waiting for volume...<br><br>")
             
-        # MODIFIED: UPPGIFT 1 - Hide ETH VWAP if eth_time is N/A
         if eth_time != 'N/A':
             html.append(f"<span style='color: #00ff00; font-weight: bold;'>ETH VWAP:</span><br>")
             if 'eth_vwap' in stats:
@@ -286,6 +283,7 @@ class DOMWidget(QWidget):
         self.is_armed = False 
         
         self.vp_data = {}
+        self.snapped_vp_data = {} 
         self.vp_max = 0
 
         self.active_editor = None
@@ -635,16 +633,26 @@ class DOMWidget(QWidget):
             should_draw_line = False
             current_pen = grid_pen
             
-            if row_height >= 6:
-                should_draw_line = True 
-            elif point_height >= 8:
-                if p % 1.0 == 0:
+            # MODIFIED: UPPGIFT 2 - Intelligent skalning för grid
+            if point_height < 4:
+                if p % 20.0 == 0:
+                    should_draw_line = True
+                    current_pen = grid_pen_strong
+            elif point_height < 10:
+                if p % 10.0 == 0:
                     should_draw_line = True
                     current_pen = grid_pen_strong
             else:
-                if p % 5.0 == 0:
-                    should_draw_line = True
-                    current_pen = grid_pen_strong
+                if row_height >= 6:
+                    should_draw_line = True 
+                elif point_height >= 8:
+                    if p % 1.0 == 0:
+                        should_draw_line = True
+                        current_pen = grid_pen_strong
+                else:
+                    if p % 5.0 == 0:
+                        should_draw_line = True
+                        current_pen = grid_pen_strong
             
             if should_draw_line or is_current:
                 painter.setPen(current_pen)
@@ -659,17 +667,19 @@ class DOMWidget(QWidget):
                 painter.fillRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h, QColor(179, 136, 255, 60))
                 painter.fillRect(int(self.col_x['lvl']), box_y, 3, box_h, QColor("#b388ff"))
                 
-                painter.setPen(QPen(QColor("#ffffff")))
-                label = self.manual_levels.get(p_round, "M")
-                display_text = metrics.elidedText(label, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
-                tw = metrics.horizontalAdvance(display_text)
-                
-                text_y = y + int(th/3)
-                while any(abs(text_y - dy) < th for dy in drawn_lvl_y): 
-                    text_y += th
-                drawn_lvl_y.append(text_y)
-                
-                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), text_y, display_text)
+                # MODIFIED: UPPGIFT 2 - Dölj text vid extrem utzoomning
+                if point_height >= 5:
+                    painter.setPen(QPen(QColor("#ffffff")))
+                    label = self.manual_levels.get(p_round, "M")
+                    display_text = metrics.elidedText(label, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
+                    tw = metrics.horizontalAdvance(display_text)
+                    
+                    text_y = y + int(th/3)
+                    while any(abs(text_y - dy) < th for dy in drawn_lvl_y): 
+                        text_y += th
+                    drawn_lvl_y.append(text_y)
+                    
+                    painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), text_y, display_text)
             
             if p_round in self.auto_levels:
                 gold_pen = QPen(QColor("#ffcc00"))
@@ -680,31 +690,41 @@ class DOMWidget(QWidget):
                 painter.fillRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h, QColor(255, 204, 0, 40))
                 painter.fillRect(int(self.col_x['lvl']), box_y, 3, box_h, QColor("#ffcc00"))
                 
-                painter.setPen(QPen(QColor("#ffffff")))
-                label_auto = self.auto_levels.get(p_round, "AUTO")
-                display_text_auto = metrics.elidedText(label_auto, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
-                tw_auto = metrics.horizontalAdvance(display_text_auto)
-                
-                text_y_auto = y + int(th/3)
-                while any(abs(text_y_auto - dy) < th for dy in drawn_lvl_y): 
-                    text_y_auto += th
-                drawn_lvl_y.append(text_y_auto)
-                
-                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), text_y_auto, display_text_auto)
+                # MODIFIED: UPPGIFT 2 - Dölj text vid extrem utzoomning
+                if point_height >= 5:
+                    painter.setPen(QPen(QColor("#ffffff")))
+                    label_auto = self.auto_levels.get(p_round, "AUTO")
+                    display_text_auto = metrics.elidedText(label_auto, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
+                    tw_auto = metrics.horizontalAdvance(display_text_auto)
+                    
+                    text_y_auto = y + int(th/3)
+                    while any(abs(text_y_auto - dy) < th for dy in drawn_lvl_y): 
+                        text_y_auto += th
+                    drawn_lvl_y.append(text_y_auto)
+                    
+                    painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), text_y_auto, display_text_auto)
             
             should_draw_text = False
             
-            if row_height >= th * 1.2:
-                should_draw_text = True 
-            elif point_height >= th * 1.5:
-                if p % 1.0 == 0:
-                    should_draw_text = True 
-            elif point_height * 5 >= th * 1.2:
-                if p % 5.0 == 0:
+            # MODIFIED: UPPGIFT 2 - Intelligent skalning för text
+            if point_height < 5:
+                if p % 20.0 == 0:
+                    should_draw_text = True
+            elif point_height < 10:
+                if p % 10.0 == 0:
                     should_draw_text = True
             else:
-                if p % 10.0 == 0:
+                if row_height >= th * 1.2:
                     should_draw_text = True 
+                elif point_height >= th * 1.5:
+                    if p % 1.0 == 0:
+                        should_draw_text = True 
+                elif point_height * 5 >= th * 1.2:
+                    if p % 5.0 == 0:
+                        should_draw_text = True
+                else:
+                    if p % 10.0 == 0:
+                        should_draw_text = True 
                 
             if should_draw_text:
                 if is_current:
@@ -873,11 +893,9 @@ class DOMWidget(QWidget):
                     tw = metrics.horizontalAdvance(tt_str)
                     painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - tw)/2), y + int(th/3), tt_str)
 
-            if self.min_tick > 0:
-                bucket_p = round(p_round / (self.min_tick * 4)) * (self.min_tick * 4)
-                if bucket_p in self.vp_data and self.vp_max > 0:
-                    w_bar = (self.vp_data[bucket_p] / self.vp_max) * (self.col_widths['vp'] - 10)
-                    painter.fillRect(int(self.col_x['vp'] + 2), box_y + 1, int(w_bar), box_h - 2, QColor(0, 170, 255, 90))
+            if hasattr(self, 'snapped_vp_data') and p_round in self.snapped_vp_data and self.vp_max > 0:
+                w_bar = (self.snapped_vp_data[p_round] / self.vp_max) * (self.col_widths['vp'] - 10)
+                painter.fillRect(int(self.col_x['vp'] + 2), box_y + 1, int(w_bar), box_h - 2, QColor(0, 170, 255, 90))
                     
             p += self.min_tick
 
@@ -976,7 +994,8 @@ class MjolnirDOMWindow(QWidget):
         lbl_scale.setStyleSheet("color: #cccccc; font-family: Consolas; font-size: 8pt; font-weight: bold;")
         
         self.slider_scale = QSlider(Qt.Orientation.Horizontal)
-        self.slider_scale.setRange(8, 80) 
+        # MODIFIED: UPPGIFT 2 - Utökad Zoom-frihet
+        self.slider_scale.setRange(1, 100) 
         self.slider_scale.setValue(80)
         self.slider_scale.setFixedWidth(60)
         self.slider_scale.valueChanged.connect(self.on_scale_changed)
@@ -1036,10 +1055,22 @@ class MjolnirDOMWindow(QWidget):
             self.dom_widget.update()
         
     def update_dom(self, data, min_tick):
-        self.dom_widget.min_tick = min_tick
+        should_update_dom = True
+        current_price = data.get('price', 0.0)
+        current_orders = data.get('tws_orders', [])
+        current_vp_max = data.get('vp_max', 0)
         
-        current = data.get('price', 0.0)
-        self.dom_widget.current_price = current
+        if hasattr(self, '_last_price_hash') and hasattr(self, '_last_orders_hash') and hasattr(self, '_last_vp_max_hash'):
+            if current_price == self._last_price_hash and current_orders == self._last_orders_hash and current_vp_max == self._last_vp_max_hash:
+                should_update_dom = False
+                
+        self._last_price_hash = current_price
+        self._last_orders_hash = list(current_orders)
+        self._last_vp_max_hash = current_vp_max
+
+        self.dom_widget.min_tick = min_tick
+        self.dom_widget.current_price = current_price
+        
         self.dom_widget.bid_price = data.get('bid', 0.0)
         self.dom_widget.ask_price = data.get('ask', 0.0)
         self.dom_widget.bid_size = data.get('bid_size', 0)
@@ -1090,13 +1121,23 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.auto_levels = data.get('auto_levels', {})
 
         self.dom_widget.vp_data = data.get('vp_data', {})
-        self.dom_widget.vp_max = data.get('vp_max', 0)
+        self.dom_widget.vp_max = current_vp_max
 
-        if getattr(self, '_auto_center', True) and current > 0:
-            self.dom_widget.center_price = current
+        self.dom_widget.snapped_vp_data = {}
+        if min_tick > 0:
+            for bp, vol in self.dom_widget.vp_data.items():
+                for tick_offset in range(-2, 3):
+                    tick_price = round(bp + (tick_offset * min_tick), 4)
+                    if round(tick_price / (min_tick * 4)) * (min_tick * 4) == bp:
+                        self.dom_widget.snapped_vp_data[tick_price] = vol
+
+        if getattr(self, '_auto_center', True) and current_price > 0:
+            self.dom_widget.center_price = current_price
             self._auto_center = False 
+            should_update_dom = True
             
-        self.dom_widget.update()
+        if should_update_dom:
+            self.dom_widget.update()
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -1201,10 +1242,11 @@ class IBKRProvider(ExecutionProvider):
         self.contract: Optional[Contract] = None
         self.mkt_data = None
         self.rt_bar_req = None
+        self.min_tick = 0.25 
         self._setup_events()
 
     def on_error(self, reqId, errorCode, errorString, contract):
-        ignore_codes = [201, 202, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2119, 2158, 10349, 10148]
+        ignore_codes = [202, 2103, 2104, 2105, 2106, 2107, 2108, 2109, 2119, 2158, 10349, 10148]
         if errorCode not in ignore_codes:
             self.signals.error_occurred.emit(errorCode, errorString)
 
@@ -1223,15 +1265,21 @@ class IBKRProvider(ExecutionProvider):
     async def _async_fetch_vwap(self, session_start_dt):
         if not self.contract or not self.is_connected():
             return
+            
+        contract = self.contract
+        
         now = datetime.now(session_start_dt.tzinfo)
         diff = (now - session_start_dt).total_seconds()
-        if diff <= 0:
+        
+        if diff < 0:
             return
             
-        duration = f"{int(diff)} S"
+        duration_seconds = max(1, int(diff))
+        duration = f"{duration_seconds} S"
+        
         try:
             bars = await self.ib.reqHistoricalDataAsync(
-                self.contract, 
+                contract, 
                 endDateTime='', 
                 durationStr=duration, 
                 barSizeSetting='5 secs', 
@@ -1252,7 +1300,7 @@ class IBKRProvider(ExecutionProvider):
                 })
             self.signals.historical_vwap_data.emit(data_list)
             
-            self.rt_bar_req = self.ib.reqRealTimeBars(self.contract, 5, 'TRADES', False)
+            self.rt_bar_req = self.ib.reqRealTimeBars(contract, 5, 'TRADES', False)
         except Exception as e:
             self.signals.error_occurred.emit(-1, f"VWAP Fetch Error: {str(e)}")
 
@@ -1264,13 +1312,18 @@ class IBKRProvider(ExecutionProvider):
         if not self.contract or not self.is_connected():
             return
             
+        contract = self.contract
+            
         async def fetch_and_calc(duration, barsize, name):
+            if contract is None:
+                return
             try:
+                safe_barsize = str(barsize)
                 bars = await self.ib.reqHistoricalDataAsync(
-                    self.contract,
+                    contract,
                     endDateTime='',
-                    durationStr=duration,
-                    barSizeSetting=barsize,
+                    durationStr=str(duration),
+                    barSizeSetting=safe_barsize,
                     whatToShow='TRADES',
                     useRTH=True,
                     formatDate=2
@@ -1294,9 +1347,12 @@ class IBKRProvider(ExecutionProvider):
             
             await asyncio.sleep(2)
 
-        await fetch_and_calc('1 W', '30 mins', 'W')
-        await fetch_and_calc('1 M', '1 hour', 'M')
-        await fetch_and_calc('1 Y', '1 day', 'Y')
+        try:
+            await fetch_and_calc('1 W', '30 mins', 'W')
+            await fetch_and_calc('1 M', '1 hour', 'M')
+            await fetch_and_calc('1 Y', '1 day', 'Y')
+        except Exception as e:
+            self.signals.error_occurred.emit(-1, f"HTF Execution Error: {str(e)}")
         
         now = datetime.now(rth_start_dt.tzinfo)
         ib_end_dt = rth_start_dt + timedelta(hours=1)
@@ -1306,7 +1362,7 @@ class IBKRProvider(ExecutionProvider):
                 utc_dt = ib_end_dt.astimezone(ZoneInfo("UTC"))
                 end_str = utc_dt.strftime('%Y%m%d-%H:%M:%S')
                 bars = await self.ib.reqHistoricalDataAsync(
-                    self.contract,
+                    contract,
                     endDateTime=end_str,
                     durationStr='3600 S',
                     barSizeSetting='1 min',
@@ -1402,6 +1458,7 @@ class IBKRProvider(ExecutionProvider):
             self.rt_bar_req = None
         self.contract = None
         self.mkt_data = None
+        self.min_tick = 0.25
         self.signals.price_update.emit(0.0)
 
     def set_contract(self, symbol: str, exchange: str):
@@ -1417,6 +1474,7 @@ class IBKRProvider(ExecutionProvider):
             
         details = sorted(details, key=lambda x: x.contract.lastTradeDateOrContractMonth)[0]
         self.contract = details.contract
+        self.min_tick = details.minTick 
         self.ib.qualifyContracts(self.contract)
         self.signals.contract_loaded.emit(details.minTick, float(self.contract.multiplier or 1.0), self.contract.localSymbol)
 
@@ -1442,6 +1500,10 @@ class IBKRProvider(ExecutionProvider):
         if not self.contract or not self.is_connected():
             return
             
+        min_tick = getattr(self, 'min_tick', 0.25)
+        lmt_price = round(round(lmt_price / min_tick) * min_tick, 4)
+        sl_price = round(round(sl_price / min_tick) * min_tick, 4)
+        
         bracket = self.ib.bracketOrder(action, qty, lmt_price, lmt_price, sl_price)
         entry = bracket[0]
         sl = bracket[2]
@@ -1455,8 +1517,8 @@ class IBKRProvider(ExecutionProvider):
         sl.orderRef = "SL"
         entry.tif = 'GTC'
         sl.tif = 'GTC'
-        entry.outsideRth = True
-        sl.outsideRth = True
+        entry.outsideRth = False
+        sl.outsideRth = False
         entry.transmit = False
         sl.transmit = True 
         
@@ -1468,10 +1530,13 @@ class IBKRProvider(ExecutionProvider):
         if not self.contract or not self.is_connected():
             return
         
+        min_tick = getattr(self, 'min_tick', 0.25)
+        price = round(round(price / min_tick) * min_tick, 4)
+        
         if order_type == 'STP':
-            order = StopOrder(action, qty, price, outsideRth=True, tif='GTC')
+            order = StopOrder(action, qty, price, outsideRth=False, tif='GTC')
         else:
-            order = LimitOrder(action, qty, price, outsideRth=True, tif='GTC')
+            order = LimitOrder(action, qty, price, outsideRth=False, tif='GTC')
             
         order.orderRef = order_ref
         order.transmit = True  
@@ -1719,6 +1784,10 @@ class SentinelManager(QObject):
         
         self.is_calculating = False
 
+        self.ui_throttle_timer = QTimer()
+        self.ui_throttle_timer.timeout.connect(self.update_ui_state)
+        self.ui_throttle_timer.start(50)
+
     def handle_historical_vwap(self, bars_list):
         if self.pos_qty != 0:
             self.is_calculating = False
@@ -1729,7 +1798,10 @@ class SentinelManager(QObject):
         self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         
-        for bar in bars_list:
+        for i, bar in enumerate(bars_list):
+            if i % 100 == 0:
+                QApplication.processEvents()
+                
             if self.pos_qty != 0:
                 self.is_calculating = False
                 self.log_signal.emit("SYSTEM: Analysis interrupted by position activity.")
@@ -1875,8 +1947,6 @@ class SentinelManager(QObject):
         for price, text in self.htf_levels.items():
             add_stacked_level(price, text)
             
-        self.update_ui_state()
-
     def handle_session_times(self, liquid_hours: str, trading_hours: str, timezone_str: str, expiry: str):
         self.current_expiry = expiry
         dt_eth = None
@@ -1979,14 +2049,12 @@ class SentinelManager(QObject):
                     self.manual_levels[float(k)] = v
             except Exception as e:
                 self.log_signal.emit(f"ERROR: Could not load levels - {str(e)}")
-        self.update_ui_state()
 
     def _start_grace_period(self):
         self.sl_locked = False
         self.grace_time_remaining = 200 
         self.grace_timer.start(100)
         self.log_signal.emit("CADET: 20s SL Grace Period started. 🔓")
-        self.update_ui_state()
 
     def _tick_grace_period(self):
         self.grace_time_remaining -= 1
@@ -1994,7 +2062,6 @@ class SentinelManager(QObject):
             self.grace_timer.stop()
             self.sl_locked = True
             self.log_signal.emit("CADET: Grace Period expired. SL direction locked. 🔒")
-        self.update_ui_state()
 
     def add_provider(self, provider: ExecutionProvider):
         provider.signals.status_msg.connect(self.log_signal.emit)
@@ -2063,7 +2130,6 @@ class SentinelManager(QObject):
             QTimer.singleShot(200, lambda: self._perform_auto_snap(q))
             
         self.pos_qty = q
-        self.update_ui_state()
 
     def _perform_auto_snap(self, q):
         if not self.is_armed or self.pos_qty == 0:
@@ -2096,9 +2162,11 @@ class SentinelManager(QObject):
             self.manual_levels.pop(price, None)
         elif action == "CLEAR":
             self.manual_levels.clear()
-        self.update_ui_state()
 
     def update_ui_state(self):
+        if not self.is_connected():
+            return
+            
         open_orders = 0
         order_details = []
         other_details = []
@@ -2112,26 +2180,38 @@ class SentinelManager(QObject):
         elif self.pos_qty < 0: 
             target_action = "BUY"
         else:
+            active_anchor_trade = None
             for p in self.providers:
                 if p.is_connected() and p.contract:
+                    primary_trade = None
+                    fallback_trade = None
                     for t in p.ib.openTrades():
                         if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
                             if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
-                                if t.order.orderType == 'STP':
-                                    pending_anchor = getattr(t.order, 'auxPrice', 0.0)
-                                else:
-                                    pending_anchor = getattr(t.order, 'lmtPrice', 0.0)
+                                if getattr(t.order, 'orderRef', '') == "ENTRY":
+                                    primary_trade = t
+                                    break
+                                elif not fallback_trade:
+                                    fallback_trade = t
                                     
-                                if t.order.action == "BUY":
-                                    pending_direction = 1
-                                else:
-                                    pending_direction = -1
-                                    
-                                if pending_direction == 1:
-                                    target_action = "SELL"
-                                else:
-                                    target_action = "BUY"
-                                break
+                    active_anchor_trade = primary_trade if primary_trade else fallback_trade
+                    
+                    if active_anchor_trade:
+                        if active_anchor_trade.order.orderType == 'STP':
+                            pending_anchor = getattr(active_anchor_trade.order, 'auxPrice', 0.0)
+                        else:
+                            pending_anchor = getattr(active_anchor_trade.order, 'lmtPrice', 0.0)
+                            
+                        if active_anchor_trade.order.action == "BUY":
+                            pending_direction = 1
+                        else:
+                            pending_direction = -1
+                            
+                        if pending_direction == 1:
+                            target_action = "SELL"
+                        else:
+                            target_action = "BUY"
+                        break
                                 
         if pending_anchor > 0.0 and self.pos_qty == 0:
             self._last_pending_anchor = pending_anchor
@@ -2402,7 +2482,6 @@ class SentinelManager(QObject):
         self.current_price = p
 
         if self.pos_qty == 0: 
-            self.update_ui_state()
             return
             
         if self.pos_qty > 0:
@@ -2429,8 +2508,6 @@ class SentinelManager(QObject):
 
         if self.trail_active:
             self.process_trailing_stop()
-            
-        self.update_ui_state()
 
     def handle_order_fill(self, ref, qty, side, price):
         self.log_signal.emit(f"⚡ FILL: {side} {qty} @ {price:.2f} [{ref}]")
@@ -2513,57 +2590,59 @@ class SentinelManager(QObject):
         for p in self.providers:
             if hasattr(p, 'clear_contract'):
                 p.clear_contract()
-        self.update_ui_state()
 
     def _get_pending_direction(self) -> int:
+        fallback_dir = 0
         for p in self.providers:
             if p.is_connected() and p.contract:
                 for t in p.ib.openTrades():
                     if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
                         if t.order.parentId == 0 and t.order.orderType in ['LMT', 'STP']:
-                            if t.order.action == "BUY":
-                                return 1
-                            else:
-                                return -1
-        return 0
+                            if getattr(t.order, 'orderRef', '') == "ENTRY":
+                                return 1 if t.order.action == "BUY" else -1
+                            elif fallback_dir == 0:
+                                fallback_dir = 1 if t.order.action == "BUY" else -1
+        return fallback_dir
 
     def _is_over_max_capacity(self, side: int, add_qty: int) -> bool:
         current_pending = 0
+        target_action = "BUY" if side == 1 else "SELL"
         for p in self.providers:
             if p.is_connected() and p.contract:
                 for t in p.ib.openTrades():
                     if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
-                        if side == 1:
-                            target_action = "BUY"
-                        else:
-                            target_action = "SELL"
-                            
                         if t.order.parentId == 0 and t.order.action == target_action:
                             current_pending += (int(t.order.totalQuantity) - int(t.orderStatus.filled))
                             
-        return (abs(self.pos_qty) + current_pending + add_qty) > self.max_qty
+        current_pos_in_direction = abs(self.pos_qty) if (self.pos_qty > 0 and side == 1) or (self.pos_qty < 0 and side == -1) else 0
+        
+        return (current_pos_in_direction + current_pending + add_qty) > self.max_qty
 
     
     def _validate_scale_price(self, action: str, new_price: float) -> str:
         """Ensures new orders are placed correctly between Anchor and SL"""
-        if self.pos_qty == 0: 
-            anchor_price = 0.0
+        anchor_price = 0.0
+        if self.pos_qty != 0:
+            anchor_price = self.avg_price
+        else:
             for p in self.providers:
                 if p.is_connected() and p.contract:
                     for t in p.ib.openTrades():
                         if t.contract.conId == p.contract.conId and t.orderStatus.status not in OrderStatus.DoneStates:
-                            if t.order.parentId == 0 and t.order.action == action and t.order.orderRef == "ENTRY":
+                            if t.order.parentId == 0 and t.order.action == action and getattr(t.order, 'orderRef', '') == "ENTRY":
                                 if t.order.orderType == 'STP':
                                     anchor_price = getattr(t.order, 'auxPrice', 0.0)
                                 else:
                                     anchor_price = getattr(t.order, 'lmtPrice', 0.0)
                                 break
+                    if anchor_price > 0.0:
+                        break
                                 
-            if anchor_price > 0.0:
-                if action == "BUY" and new_price >= anchor_price:
-                    return "Scale must be BEHIND Anchor!"
-                if action == "SELL" and new_price <= anchor_price:
-                    return "Scale must be BEHIND Anchor!"
+        if anchor_price > 0.0:
+            if action == "BUY" and new_price >= anchor_price:
+                return "Scale must be BEHIND Anchor!"
+            if action == "SELL" and new_price <= anchor_price:
+                return "Scale must be BEHIND Anchor!"
                     
         current_sl = 0.0
         for p in self.providers:
@@ -2775,7 +2854,6 @@ class SentinelManager(QObject):
         self.tp_points = self.saved_tp_points
 
         self._last_pending_anchor = 0.0
-        self.update_ui_state()
 
     def execute_close(self):
         """Emergency button. Same logic as flatten, but warns loudly in the log."""
@@ -2802,7 +2880,6 @@ class SentinelManager(QObject):
         
         self.sl_points = self.saved_sl_points
         self.tp_points = self.saved_tp_points
-        self.update_ui_state()
 
     def execute_be_move(self):
         if self.pos_qty == 0:
@@ -2835,8 +2912,6 @@ class SentinelManager(QObject):
             self.peak_price = self.current_price 
             self.log_signal.emit(f"TURBO ACTIVE: {self.tight_trail_points} pts.")
             self.process_trailing_stop()
-            
-        self.update_ui_state()
 
     def nudge_order(self, order_type: str, price_ticks: int):
         if self.pos_qty > 0:
@@ -2919,8 +2994,6 @@ class SentinelManager(QObject):
             self.pending_nudges[order_type] = exact_price
             self.nudge_timer.start(400)
             self._pending_log_type = order_type
-            
-        self.update_ui_state()
 
     def commit_nudges(self):
         for ref, price in self.pending_nudges.items():
@@ -2941,14 +3014,12 @@ class SentinelManager(QObject):
         self.cooldown_total = seconds
         self.cooldown_remaining = seconds
         self.pt_timer.start(1000)
-        self.update_ui_state()
 
     def _tick_post_trade_cooldown(self):
         self.cooldown_remaining -= 1
         if self.cooldown_remaining <= 0:
             self.pt_timer.stop()
             self.post_trade_cooldown_active = False
-        self.update_ui_state()
 
     def handle_dom_place_order(self, action: str, order_type: str, price: float):
         if getattr(self, 'is_calculating', False):
@@ -3056,7 +3127,6 @@ class SentinelManager(QObject):
                                     p.ib.placeOrder(ct.contract, ct.order)
                                         
                                 self.log_signal.emit(f"DOM: Scaled {action} parent (and {len(children)} SL/TP) to {new_qty} contracts.")
-                                self.update_ui_state()
                                 return
                                                 
     def move_anchor_group(self, new_price: float):
@@ -3121,7 +3191,6 @@ class SentinelManager(QObject):
         self.pending_nudges.clear() 
         self._last_pending_anchor = new_price 
         self.log_signal.emit(f"DOM: Moved Master & {count-1} linked orders by {delta:+.2f} pts.")
-        self.update_ui_state()
 
     def move_order_to_price(self, order_type: str, new_price: float):
         if self.pos_qty > 0:
@@ -3138,7 +3207,6 @@ class SentinelManager(QObject):
             if anchor > 0:
                 self.tp_points = max(self.min_tick, abs(new_price - anchor))
                 self.virtual_tp = new_price
-                self.update_ui_state()
             return
             
         if self.pos_qty == 0:
@@ -3212,8 +3280,6 @@ class SentinelManager(QObject):
                 else:
                     self.sl_points = max(self.min_tick, (anchor - new_price) * direction)
                 
-        self.update_ui_state()
-
     def cancel_dom_order(self, target: str, price: float):
         for p in self.providers:
             if p.is_connected():
@@ -3687,6 +3753,9 @@ class MjolnirGUI(QWidget):
             name = self.combo_symbol.currentText()
             if name == "-- SELECT INSTRUMENT --":
                 return
+            
+            # NEW: UPPGIFT 1 - Auto-recenter vid instrumentbyte
+            self.dom_window._auto_center = True
             
             data = self.instruments.get(name, {})
             self.active_instrument_name = name

@@ -4,7 +4,7 @@
             "symbol": "MNQ",
             "exchange": "CME",
             "qty": 1,
-            "tp": 20.0,
+            "tp": 10.0,
             "sl": 10.0,
             "max_qty": 3,
             "zone_ticks": 10,

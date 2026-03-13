@@ -1,12 +1,13 @@
 {
     "last_connection": "GATEWAY PAPER (4002)",
-    "last_instrument": "DAX",
+    "last_instrument": "MES",
     "use_virtual_tp": true,
     "dom_scales": {
         "MES": 28,
         "OMXS30": 80,
         "MNQ": 10,
-        "BIT": 8
+        "BIT": 8,
+        "DAX": 13
     },
     "dom_height": 800
 }
