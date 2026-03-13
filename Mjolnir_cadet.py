@@ -1461,6 +1461,8 @@ class SentinelManager(QObject):
         # NEW: [UPPGIFT 3 - VWAP ackumulatorer]
         self.vwap_sum_vol = 0
         self.vwap_sum_pv = 0.0
+        # NEW: [UPPGIFT 1 - Ny ackumulator för varians]
+        self.vwap_sum_p2v = 0.0
         
         # NEW: [UPPGIFT 3 - Hållare för RTH-start]
         self.rth_start_time = None
@@ -1516,35 +1518,50 @@ class SentinelManager(QObject):
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
 
-    # NEW: [UPPGIFT 3 - Hantera historisk VWAP data]
+    # MODIFIED: [UPPGIFT 2 - Hantera historisk data för variansen]
     def handle_historical_vwap(self, bars_list):
         self.vwap_sum_vol = 0
         self.vwap_sum_pv = 0.0
+        self.vwap_sum_p2v = 0.0
         for bar in bars_list:
             typ_price = (bar['high'] + bar['low'] + bar['close']) / 3.0
             self.vwap_sum_vol += bar['volume']
             self.vwap_sum_pv += (typ_price * bar['volume'])
+            self.vwap_sum_p2v += (typ_price ** 2) * bar['volume']
             
         if self.vwap_sum_vol > 0:
             self._update_vwap_level()
 
-    # NEW: [UPPGIFT 3 - Hantera realtids VWAP data]
+    # MODIFIED: [UPPGIFT 3 - Hantera realtids-data för variansen]
     def handle_realtime_vwap(self, high, low, close, volume):
         if volume == 0:
             return
         typ_price = (high + low + close) / 3.0
         self.vwap_sum_vol += volume
         self.vwap_sum_pv += (typ_price * volume)
+        self.vwap_sum_p2v += (typ_price ** 2) * volume
         self._update_vwap_level()
 
-    # NEW: [UPPGIFT 3 - Uppdatera VWAP nivå i DOM]
+    # MODIFIED: [UPPGIFT 4 - Beräkna och uppdatera Value Area i DOM]
     def _update_vwap_level(self):
         if self.vwap_sum_vol == 0:
             return
         vwap_price = self.vwap_sum_pv / self.vwap_sum_vol
+        variance = (self.vwap_sum_p2v / self.vwap_sum_vol) - (vwap_price ** 2)
+        variance = max(0.0, variance)
+        sd = math.sqrt(variance)
+        
+        upper_band = vwap_price + sd
+        lower_band = vwap_price - sd
+        
         snap_vwap = round(round(vwap_price / self.min_tick) * self.min_tick, 4)
+        snap_upper = round(round(upper_band / self.min_tick) * self.min_tick, 4)
+        snap_lower = round(round(lower_band / self.min_tick) * self.min_tick, 4)
+        
         self.auto_levels.clear()
         self.auto_levels[snap_vwap] = "VWAP"
+        self.auto_levels[snap_upper] = "+1 SD"
+        self.auto_levels[snap_lower] = "-1 SD"
         self.update_ui_state()
 
     # MODIFIED: [UPPGIFT 2 - Isolera tids-parsningen från VWAP-anropet]
