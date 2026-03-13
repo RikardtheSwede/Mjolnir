@@ -135,9 +135,7 @@ class InstrumentDetailsWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        header = QLabel("INSTRUMENT DETAILS")
-        header.setStyleSheet("color: #888888; font-weight: bold; border-bottom: 1px solid #333;")
-        layout.addWidget(header)
+        # MODIFIED: UPPGIFT 1 - Removed duplicated header QLabel
         
         self.display_lbl = QLabel("Waiting for data...")
         self.display_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -146,6 +144,7 @@ class InstrumentDetailsWindow(QWidget):
 
     def update_details(self, data: dict):
         html = []
+        html.append(f"<span style='color: #ffff00; font-weight: bold;'>CONTRACT:</span> {data.get('local_symbol', 'N/A')}<br>")
         html.append(f"<span style='color: #00ff00; font-weight: bold;'>EXPIRY:</span> {data.get('expiry', 'N/A')}<br><br>")
         
         eth_time = data.get('eth_time', 'N/A')
@@ -186,13 +185,15 @@ class InstrumentDetailsWindow(QWidget):
         else:
             html.append("&nbsp;Waiting for volume...<br><br>")
             
-        html.append(f"<span style='color: #00ff00; font-weight: bold;'>ETH VWAP:</span><br>")
-        if 'eth_vwap' in stats:
-            html.append(f"&nbsp;VWAP : {stats['eth_vwap']:.2f}<br>")
-            html.append(f"&nbsp;+1 SD: {stats['eth_upper']:.2f}<br>")
-            html.append(f"&nbsp;-1 SD: {stats['eth_lower']:.2f}<br>")
-        else:
-            html.append("&nbsp;Waiting for volume...<br>")
+        # MODIFIED: UPPGIFT 1 - Hide ETH VWAP if eth_time is N/A
+        if eth_time != 'N/A':
+            html.append(f"<span style='color: #00ff00; font-weight: bold;'>ETH VWAP:</span><br>")
+            if 'eth_vwap' in stats:
+                html.append(f"&nbsp;VWAP : {stats['eth_vwap']:.2f}<br>")
+                html.append(f"&nbsp;+1 SD: {stats['eth_upper']:.2f}<br>")
+                html.append(f"&nbsp;-1 SD: {stats['eth_lower']:.2f}<br>")
+            else:
+                html.append("&nbsp;Waiting for volume...<br>")
             
         self.display_lbl.setText("".join(html))
 
@@ -258,7 +259,6 @@ class DOMWidget(QWidget):
         self.min_tick = 0.25
         self.pixels_per_point = 80  
         
-        # MODIFIED: Added 'vp' to col_widths
         self.col_widths = {'bid': 40, 'buy': 60, 'price': 80, 'sell': 60, 'ask': 40, 'lvl': 110, 'vp': 80}
         self.col_x = {}
 
@@ -285,7 +285,6 @@ class DOMWidget(QWidget):
         self.auto_levels = {}
         self.is_armed = False 
         
-        # NEW: Added vp variables
         self.vp_data = {}
         self.vp_max = 0
 
@@ -331,16 +330,14 @@ class DOMWidget(QWidget):
             self.setFocus()
 
     def update_geometry_map(self): 
-        w = self.width()
-        center_x = w / 2
-        
-        self.col_x['price'] = center_x - (self.col_widths['price'] / 2)
-        self.col_x['buy'] = self.col_x['price'] - self.col_widths['buy']
-        self.col_x['bid'] = self.col_x['buy'] - self.col_widths['bid']
+        total_w = sum(self.col_widths.values())
+        start_x = (self.width() - total_w) / 2
+        self.col_x['bid'] = start_x
+        self.col_x['buy'] = self.col_x['bid'] + self.col_widths['bid']
+        self.col_x['price'] = self.col_x['buy'] + self.col_widths['buy']
         self.col_x['sell'] = self.col_x['price'] + self.col_widths['price']
-        self.col_x['ask'] = self.col_x['sell'] + self.col_widths['sell'] 
+        self.col_x['ask'] = self.col_x['sell'] + self.col_widths['sell']
         self.col_x['lvl'] = self.col_x['ask'] + self.col_widths['ask']
-        # MODIFIED: Calculate X coordinate for Volume Profile column
         self.col_x['vp'] = self.col_x['lvl'] + self.col_widths['lvl']
 
     def mousePressEvent(self, event):
@@ -516,7 +513,6 @@ class DOMWidget(QWidget):
         painter.drawLine(int(self.col_x['ask']), 0, int(self.col_x['ask']), h) 
         painter.drawLine(int(self.col_x['ask'] + self.col_widths['ask']), 0, int(self.col_x['ask'] + self.col_widths['ask']), h) 
         painter.drawLine(int(self.col_x['lvl'] + self.col_widths['lvl']), 0, int(self.col_x['lvl'] + self.col_widths['lvl']), h) 
-        # MODIFIED: Added vp separator line
         painter.drawLine(int(self.col_x['vp'] + self.col_widths['vp']), 0, int(self.col_x['vp'] + self.col_widths['vp']), h) 
 
         header_bg = QColor("#004466") if self.is_armed else QColor(20, 20, 20, 255)
@@ -538,7 +534,6 @@ class DOMWidget(QWidget):
         draw_header("SEL", self.col_x['sell'], self.col_widths['sell'])
         draw_header("ASK", self.col_x['ask'], self.col_widths['ask'])
         draw_header("LVL", self.col_x['lvl'], self.col_widths['lvl'])
-        # MODIFIED: Added VP header
         draw_header("VP", self.col_x['vp'], self.col_widths['vp'])
         
         painter.setPen(QPen(QColor("#444444") if not self.is_armed else QColor("#0088aa")))
@@ -606,6 +601,8 @@ class DOMWidget(QWidget):
         center_x = w / 2
         p = start_price
         
+        drawn_lvl_y = []
+        
         while p <= end_price + (self.min_tick / 2):
             price_diff = p - self.center_price
             y = int(center_y - (price_diff * self.pixels_per_point))
@@ -631,7 +628,9 @@ class DOMWidget(QWidget):
             box_h = int(max(row_height, th + 4))
             
             if is_current:
-                painter.fillRect(int(self.col_x['buy']), box_y, int(self.col_widths['buy'] + self.col_widths['price'] + self.col_widths['sell']), box_h, QColor("#00334d"))
+                painter.fillRect(int(self.col_x['buy']), box_y, int(self.col_widths['buy'] + self.col_widths['price'] + self.col_widths['sell']), box_h, QColor(0, 85, 128, 180))
+                painter.setPen(QPen(QColor("#00ffff"), 1))
+                painter.drawRect(int(self.col_x['buy']), box_y, int(self.col_widths['buy'] + self.col_widths['price'] + self.col_widths['sell']), box_h)
                 
             should_draw_line = False
             current_pen = grid_pen
@@ -664,7 +663,13 @@ class DOMWidget(QWidget):
                 label = self.manual_levels.get(p_round, "M")
                 display_text = metrics.elidedText(label, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
                 tw = metrics.horizontalAdvance(display_text)
-                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), y + int(th/3), display_text)
+                
+                text_y = y + int(th/3)
+                while any(abs(text_y - dy) < th for dy in drawn_lvl_y): 
+                    text_y += th
+                drawn_lvl_y.append(text_y)
+                
+                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), text_y, display_text)
             
             if p_round in self.auto_levels:
                 gold_pen = QPen(QColor("#ffcc00"))
@@ -679,7 +684,13 @@ class DOMWidget(QWidget):
                 label_auto = self.auto_levels.get(p_round, "AUTO")
                 display_text_auto = metrics.elidedText(label_auto, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
                 tw_auto = metrics.horizontalAdvance(display_text_auto)
-                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), y + int(th/3), display_text_auto)
+                
+                text_y_auto = y + int(th/3)
+                while any(abs(text_y_auto - dy) < th for dy in drawn_lvl_y): 
+                    text_y_auto += th
+                drawn_lvl_y.append(text_y_auto)
+                
+                painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), text_y_auto, display_text_auto)
             
             should_draw_text = False
             
@@ -705,7 +716,7 @@ class DOMWidget(QWidget):
                     
                 price_str = f"{p:.2f}"
                 tw = metrics.horizontalAdvance(price_str)
-                painter.drawText(int(center_x - (tw / 2)), y + int(th/3), price_str)
+                painter.drawText(int(self.col_x['price'] + (self.col_widths['price'] - tw) / 2), y + int(th/3), price_str)
 
             if scale_anchor > 0.0 and should_draw_text:
                 pts = (p_round - scale_anchor) * direction
@@ -862,12 +873,11 @@ class DOMWidget(QWidget):
                     tw = metrics.horizontalAdvance(tt_str)
                     painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - tw)/2), y + int(th/3), tt_str)
 
-            # NEW: Render Volume Profile bar
             if self.min_tick > 0:
                 bucket_p = round(p_round / (self.min_tick * 4)) * (self.min_tick * 4)
                 if bucket_p in self.vp_data and self.vp_max > 0:
                     w_bar = (self.vp_data[bucket_p] / self.vp_max) * (self.col_widths['vp'] - 10)
-                    painter.fillRect(int(self.col_x['vp'] + 2), box_y + 1, int(w_bar), box_h - 2, QColor(0, 150, 255, 40))
+                    painter.fillRect(int(self.col_x['vp'] + 2), box_y + 1, int(w_bar), box_h - 2, QColor(0, 170, 255, 90))
                     
             p += self.min_tick
 
@@ -896,8 +906,7 @@ class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("MJÖLNIR DOM")
-        # MODIFIED: Increased width for VP column
-        self.resize(680, 800) 
+        self.resize(490, 800) 
         self.setStyleSheet("background-color: #151515;")
         self.manager = parent.manager if parent else None
         self.main_gui = parent 
@@ -1080,7 +1089,6 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.manual_levels = data.get('manual_levels', {})
         self.dom_widget.auto_levels = data.get('auto_levels', {})
 
-        # NEW: Update VP data
         self.dom_widget.vp_data = data.get('vp_data', {})
         self.dom_widget.vp_max = data.get('vp_max', 0)
 
@@ -1119,7 +1127,7 @@ class ProviderSignals(QObject):
     position_update = pyqtSignal(int, float)
     price_update = pyqtSignal(float)
     error_occurred = pyqtSignal(int, str)
-    contract_loaded = pyqtSignal(float, float) 
+    contract_loaded = pyqtSignal(float, float, str) 
     order_filled = pyqtSignal(str, int, str, float)
     session_times = pyqtSignal(str, str, str, str) 
     historical_vwap_data = pyqtSignal(list)
@@ -1295,7 +1303,8 @@ class IBKRProvider(ExecutionProvider):
         
         if now > ib_end_dt:
             try:
-                end_str = ib_end_dt.strftime('%Y%m%d %H:%M:%S')
+                utc_dt = ib_end_dt.astimezone(ZoneInfo("UTC"))
+                end_str = utc_dt.strftime('%Y%m%d-%H:%M:%S')
                 bars = await self.ib.reqHistoricalDataAsync(
                     self.contract,
                     endDateTime=end_str,
@@ -1409,7 +1418,7 @@ class IBKRProvider(ExecutionProvider):
         details = sorted(details, key=lambda x: x.contract.lastTradeDateOrContractMonth)[0]
         self.contract = details.contract
         self.ib.qualifyContracts(self.contract)
-        self.signals.contract_loaded.emit(details.minTick, float(self.contract.multiplier or 1.0))
+        self.signals.contract_loaded.emit(details.minTick, float(self.contract.multiplier or 1.0), self.contract.localSymbol)
 
         liquid_hours = getattr(details, 'liquidHours', '')
         time_zone = getattr(details, 'timeZoneId', '')
@@ -1652,9 +1661,9 @@ class SentinelManager(QObject):
         self.ib_locked = False
         self.htf_levels = {}
         
-        # NEW: Volume profile data tracking
         self.vp_data = {}
         self.vp_max_vol = 0
+        self.local_symbol = ""
         
         self.post_trade_cooldown_active = False
         self.cooldown_remaining = 0
@@ -1707,13 +1716,30 @@ class SentinelManager(QObject):
         self.nudge_timer = QTimer()
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
+        
+        self.is_calculating = False
 
     def handle_historical_vwap(self, bars_list):
+        if self.pos_qty != 0:
+            self.is_calculating = False
+            return
+            
+        self.log_signal.emit("SYSTEM: Analyzing historical order flow and Volume Profile...")
+        
         self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         
         for bar in bars_list:
+            if self.pos_qty != 0:
+                self.is_calculating = False
+                self.log_signal.emit("SYSTEM: Analysis interrupted by position activity.")
+                return
+                
             ts = bar['timestamp']
+            
+            if self.eth_start_ts == 0 and ts < self.rth_start_ts:
+                continue
+                
             typ_price = (bar['high'] + bar['low'] + bar['close']) / 3.0
             vol = bar['volume']
             
@@ -1727,6 +1753,13 @@ class SentinelManager(QObject):
                 self.vwap_rth['pv'] += (typ_price * vol)
                 self.vwap_rth['p2v'] += ((typ_price ** 2) * vol)
                 
+                if self.min_tick > 0:
+                    bucket_price = round(bar['close'] / (self.min_tick * 4)) * (self.min_tick * 4)
+                    self.vp_data[bucket_price] = self.vp_data.get(bucket_price, 0) + vol
+                    self.vp_max_vol = max(self.vp_max_vol, self.vp_data[bucket_price])
+                
+        self.is_calculating = False
+        self.log_signal.emit("SYSTEM: Analysis complete. Tactical HUD Ready.")
         self._update_vwap_level()
 
     def handle_realtime_vwap(self, ts, high, low, close, volume):
@@ -1745,7 +1778,6 @@ class SentinelManager(QObject):
             self.vwap_rth['pv'] += (typ_price * volume)
             self.vwap_rth['p2v'] += ((typ_price ** 2) * volume)
             
-            # NEW: Update Volume Profile buckets
             if self.min_tick > 0:
                 bucket_price = round(close / (self.min_tick * 4)) * (self.min_tick * 4)
                 self.vp_data[bucket_price] = self.vp_data.get(bucket_price, 0) + volume
@@ -1820,6 +1852,9 @@ class SentinelManager(QObject):
             self.auto_levels[target] = text
 
         for engine, prefix, suffix in [(self.vwap_eth, "eth", " ETH"), (self.vwap_rth, "rth", " RTH")]:
+            if prefix == "eth" and self.eth_start_ts == 0:
+                continue
+                
             if engine['vol'] > 0:
                 vwap_p = engine['pv'] / engine['vol']
                 var = max(0.0, (engine['p2v'] / engine['vol']) - (vwap_p ** 2))
@@ -1853,7 +1888,6 @@ class SentinelManager(QObject):
         self.ib_low = 1e9
         self.ib_locked = False
         
-        # MODIFIED: Reset Volume Profile data on new session
         self.vp_data.clear()
         self.vp_max_vol = 0
         
@@ -1881,6 +1915,11 @@ class SentinelManager(QObject):
         dt_eth = parse_hours(trading_hours)
         dt_rth = parse_hours(liquid_hours)
         
+        if "DAX" in self.current_instrument_name.upper() or "OMX" in self.current_instrument_name.upper():
+            dt_eth = None  
+            if dt_rth:
+                dt_rth = dt_rth.replace(hour=9, minute=0, second=0)
+        
         self.eth_start_ts = int(dt_eth.timestamp()) if dt_eth else 0
         self.rth_start_ts = int(dt_rth.timestamp()) if dt_rth else 0
         
@@ -1889,12 +1928,15 @@ class SentinelManager(QObject):
         
         self.log_signal.emit(f"SYSTEM: Times detected. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} ({timezone_str}).")
 
-        if dt_eth:
-            now = datetime.now(dt_eth.tzinfo)
-            if now >= dt_eth:
+        start_dt = dt_eth if dt_eth else dt_rth
+        if start_dt:
+            now = datetime.now(start_dt.tzinfo)
+            if now >= start_dt:
+                if self.pos_qty == 0:
+                    self.is_calculating = True
                 for p in self.providers:
                     if p.is_connected() and hasattr(p, 'start_vwap_routine'):
-                        p.start_vwap_routine(dt_eth)
+                        p.start_vwap_routine(start_dt)
                         if dt_rth and hasattr(p, 'start_htf_snapshot_routine'):
                             p.start_htf_snapshot_routine(dt_rth)
 
@@ -1969,8 +2011,9 @@ class SentinelManager(QObject):
         provider.signals.ib_snapshot_data.connect(self.handle_ib_snapshot)
         self.providers.append(provider)
 
-    def handle_contract_info(self, min_tick, multiplier):
+    def handle_contract_info(self, min_tick, multiplier, local_symbol):
         self.min_tick = min_tick
+        self.local_symbol = local_symbol
         self.load_levels_from_disk()
 
     def handle_position(self, q, a):
@@ -2294,7 +2337,6 @@ class SentinelManager(QObject):
         elif pending_direction != 0:
             direction_to_send = pending_direction
 
-        # MODIFIED: Added vp_data and vp_max to UI payload
         data = {
             'pos': int(self.pos_qty),
             'avg': self.avg_price,
@@ -2343,7 +2385,8 @@ class SentinelManager(QObject):
             'rth_time': getattr(self, 'rth_time_str', 'N/A'),
             
             'vp_data': self.vp_data,
-            'vp_max': self.vp_max_vol
+            'vp_max': self.vp_max_vol,
+            'local_symbol': getattr(self, 'local_symbol', '')
         }
 
         if self.pos_qty != 0:
@@ -2538,6 +2581,10 @@ class SentinelManager(QObject):
         return ""
 
     def execute_trade(self, action: str):
+        if getattr(self, 'is_calculating', False):
+            self.log_signal.emit("GUARD RAIL: Analysis in progress. Please wait.")
+            return
+
         if not self.is_armed:
             self.arm_reject_signal.emit()
             self.log_signal.emit("REJECTED: System is in SAFE mode. Arm first.")
@@ -2602,9 +2649,15 @@ class SentinelManager(QObject):
                     p.place_bracket(action, qty, lmt, 0.0, sl_price)
 
     def execute_join_bid(self):
+        if getattr(self, 'is_calculating', False):
+            self.log_signal.emit("GUARD RAIL: Analysis in progress. Please wait.")
+            return
         self._sniper_entry("BUY")
         
     def execute_join_ask(self):
+        if getattr(self, 'is_calculating', False):
+            self.log_signal.emit("GUARD RAIL: Analysis in progress. Please wait.")
+            return
         self._sniper_entry("SELL")
 
     def _sniper_entry(self, action: str):
@@ -2898,6 +2951,10 @@ class SentinelManager(QObject):
         self.update_ui_state()
 
     def handle_dom_place_order(self, action: str, order_type: str, price: float):
+        if getattr(self, 'is_calculating', False):
+            self.log_signal.emit("GUARD RAIL: Analysis in progress. Please wait.")
+            return
+
         if getattr(self, 'post_trade_cooldown_active', False):
             self.cooldown_reject_signal.emit()
             self.log_signal.emit("REJECTED: Post-trade cooldown active. ⏳")
@@ -3266,8 +3323,7 @@ class MjolnirGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("MJÖLNIR - THE CADET")
-        # MODIFIED: Increased expanded width to accommodate VP column in DOM
-        self.expanded_width = 820
+        self.expanded_width = 750
         self.collapsed_width = 380 
         self.setFixedSize(self.expanded_width, 700) 
         self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
@@ -3974,8 +4030,7 @@ class MjolnirGUI(QWidget):
         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
         
         if hasattr(self, 'dom_window'):
-            current_width = self.dom_window.width()
-            self.dom_window.resize(current_width, self.dom_height_preset)
+            self.dom_window.resize(490, self.dom_height_preset)
 
     def update_log(self, text):
         log_str = f"[{time.strftime('%H:%M:%S')}] {text}"
@@ -4103,8 +4158,7 @@ class MjolnirGUI(QWidget):
                         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
                         
                     if hasattr(self, 'dom_window'):
-                        # MODIFIED: Adjust DOM window resize for new width
-                        self.dom_window.resize(680, self.dom_height_preset)
+                        self.dom_window.resize(490, self.dom_height_preset)
                         
             except:
                 pass
