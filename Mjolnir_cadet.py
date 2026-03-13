@@ -1,6 +1,6 @@
 # =============================================================================
 # PROJECT: MJÖLNIR TACTICAL HUD (IBKR EDITION)
-# VERSION: 0.9.5
+# VERSION: 0.9.6
 # STANDARDS: STRICT PEP8. NO SEMICOLONS. NO TRUNCATION.
 # =============================================================================
 
@@ -14,7 +14,6 @@ import time
 import asyncio
 import logging 
 
-# NEW: [UPPGIFT 3 - Imports för hantering av tidszoner och sessionstider]
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -23,14 +22,11 @@ logging.getLogger('ib_async').setLevel(logging.CRITICAL)
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional
 
-# MODIFIED: [UPPGIFT 1 - Lade till QLineEdit]
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QFrame, QComboBox, 
                              QStackedWidget, QProgressBar, QSlider, QCheckBox, QTextBrowser,
                              QInputDialog, QLineEdit) 
-# MODIFIED: [UPPGIFT 1 - Lade till QEvent]
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QRect, QPoint, QEvent
-# MODIFIED: [UPPGIFT 1 - Lade till QFontMetrics]
 from PyQt6.QtGui import QKeySequence, QShortcut, QPainter, QColor, QPen, QFont, QPolygon, QFontMetrics
 from ib_async import *
 
@@ -70,6 +66,7 @@ class MarqueeLabel(QLabel):
             
         display_text = self._full_text[self._scroll_pos:] + self._full_text[:self._scroll_pos]
         self.setText(display_text[:42])
+
 
 class TWSInspectorWindow(QWidget):
     """
@@ -128,6 +125,57 @@ class TWSInspectorWindow(QWidget):
             self.warning_lbl.hide()
 
 
+# NEW: [UPPGIFT 6 - Bygg Instrument Details Fönstret]
+class InstrumentDetailsWindow(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent, Qt.WindowType.Tool)
+        self.setWindowTitle("INSTRUMENT DETAILS")
+        self.setFixedSize(350, 280)
+        self.setStyleSheet("background-color: #1a1a1a; color: #dddddd; font-family: Consolas;")
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        header = QLabel("INSTRUMENT DETAILS")
+        header.setStyleSheet("color: #888888; font-weight: bold; border-bottom: 1px solid #333;")
+        layout.addWidget(header)
+        
+        self.display_lbl = QLabel("Waiting for data...")
+        self.display_lbl.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.display_lbl.setStyleSheet("background-color: #0d0d0d; padding: 5px; border: 1px solid #333;")
+        layout.addWidget(self.display_lbl, stretch=1)
+
+    def update_details(self, data: dict):
+        html = []
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>EXPIRY:</span> {data.get('expiry', 'N/A')}<br><br>")
+        
+        eth_time = data.get('eth_time', 'N/A')
+        rth_time = data.get('rth_time', 'N/A')
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>SESSIONS (LOCAL):</span><br>")
+        html.append(f"&nbsp;ETH Start: {eth_time}<br>")
+        html.append(f"&nbsp;RTH Start: {rth_time}<br><br>")
+
+        stats = data.get('vwap_stats', {})
+        
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>RTH VWAP:</span><br>")
+        if 'rth_vwap' in stats:
+            html.append(f"&nbsp;VWAP : {stats['rth_vwap']:.2f}<br>")
+            html.append(f"&nbsp;+1 SD: {stats['rth_upper']:.2f}<br>")
+            html.append(f"&nbsp;-1 SD: {stats['rth_lower']:.2f}<br><br>")
+        else:
+            html.append("&nbsp;Waiting for volume...<br><br>")
+            
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>ETH VWAP:</span><br>")
+        if 'eth_vwap' in stats:
+            html.append(f"&nbsp;VWAP : {stats['eth_vwap']:.2f}<br>")
+            html.append(f"&nbsp;+1 SD: {stats['eth_upper']:.2f}<br>")
+            html.append(f"&nbsp;-1 SD: {stats['eth_lower']:.2f}<br>")
+        else:
+            html.append("&nbsp;Waiting for volume...<br>")
+            
+        self.display_lbl.setText("".join(html))
+
+
 class DOMWidget(QWidget):
     """Kärngrafikmotorn för Price Ladder - Pro Jigsaw Layout."""
     
@@ -135,7 +183,7 @@ class DOMWidget(QWidget):
     sig_dom_join_bid = pyqtSignal()
     sig_dom_join_ask = pyqtSignal()
 
-    sig_dom_update_level = pyqtSignal(float, str, str) # (pris, text, action)
+    sig_dom_update_level = pyqtSignal(float, str, str) 
 
     sig_dom_place_order = pyqtSignal(str, str, float)
     sig_dom_modify_qty = pyqtSignal(str, float)        
@@ -155,9 +203,7 @@ class DOMWidget(QWidget):
         self.min_tick = 0.25
         self.pixels_per_point = 80  
         
-        # MODIFIED: [UPPGIFT 1 - Breddad LVL-kolumn från 65 till 110]
         self.col_widths = {'bid': 40, 'buy': 60, 'price': 80, 'sell': 60, 'ask': 40, 'lvl': 110}
-        # Koordinat-dict
         self.col_x = {}
 
         self.my_buys = {}
@@ -165,11 +211,10 @@ class DOMWidget(QWidget):
         self.my_stop_buys = {}
         self.my_stop_sells = {}
 
-        # Separata dicts för Stop-entréer
         self.my_stop_entries_buy = {}
         self.my_stop_entries_sell = {}
         
-        self.virtual_tp = 0.0 # Intern hantering av Virtual TP
+        self.virtual_tp = 0.0 
         
         self.pos_qty = 0
         self.avg_price = 0.0
@@ -180,17 +225,13 @@ class DOMWidget(QWidget):
         self.pending_sl_nudge = 0.0
         self.pending_sl_side = None
         
-        # Manuealla nivåer (LVL) skickas från managern
         self.manual_levels = {}
         self.auto_levels = {}
         self.is_armed = False 
         
-        # NEW: [UPPGIFT 1 - Hållare för aktiv inline-editor]
         self.active_editor = None
-        
         self.setStyleSheet("background-color: #0d0d0d;")
 
-    # NEW: [UPPGIFT 1 - Event filter för inline edit (ESC och FocusOut)]
     def eventFilter(self, obj, event):
         if self.active_editor and obj is self.active_editor:
             if event.type() == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
@@ -201,7 +242,6 @@ class DOMWidget(QWidget):
                 return True
         return super().eventFilter(obj, event)
 
-    # NEW: [UPPGIFT 1 - Skapa inline-editor för LVL-cell]
     def spawn_inline_edit(self, price, current_text, rect):
         if self.active_editor:
             self._close_inline_editor()
@@ -224,7 +264,6 @@ class DOMWidget(QWidget):
         self.active_editor.setFocus()
         self.active_editor.selectAll()
 
-    # NEW: [UPPGIFT 1 - Stängningshjälp för inline-editor]
     def _close_inline_editor(self):
         if self.active_editor:
             self.active_editor.deleteLater()
@@ -232,7 +271,6 @@ class DOMWidget(QWidget):
             self.setFocus()
 
     def update_geometry_map(self): 
-        """Beräknar x-koordinater för alla kolumner baserat på center_x."""
         w = self.width()
         center_x = w / 2
         
@@ -241,7 +279,6 @@ class DOMWidget(QWidget):
         self.col_x['bid'] = self.col_x['buy'] - self.col_widths['bid']
         self.col_x['sell'] = self.col_x['price'] + self.col_widths['price']
         self.col_x['ask'] = self.col_x['sell'] + self.col_widths['sell'] 
-        # MODIFIED: [UPPGIFT 1 - Fixat kolumngeometrin i DOMWidget så den klibbar vid ASK]
         self.col_x['lvl'] = self.col_x['ask'] + self.col_widths['ask']
 
     def mousePressEvent(self, event):
@@ -257,7 +294,6 @@ class DOMWidget(QWidget):
         w = self.width()
         h = self.height()
         
-        # Middle-click för centrering
         if event.button() == Qt.MouseButton.MiddleButton:
             self.sig_dom_recenter.emit()
             return
@@ -300,7 +336,6 @@ class DOMWidget(QWidget):
                 return
 
             if event.button() == Qt.MouseButton.LeftButton:
-                # MODIFIED: [UPPGIFT 1 - Ersatt QInputDialog med dynamisk spawn_inline_edit]
                 if target_price is not None:
                     price_diff_target = target_price - self.center_price
                     y_target = center_y - (price_diff_target * self.pixels_per_point)
@@ -315,24 +350,12 @@ class DOMWidget(QWidget):
                     rect = QRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h)
                     self.spawn_inline_edit(target_price, self.manual_levels[target_price], rect)
                 else:
-                    self.manual_levels[clicked_price] = "NEW"
-                    self.sig_dom_update_level.emit(clicked_price, "NEW", "ADD")
-                    
-                    price_diff_target = clicked_price - self.center_price
-                    y_target = center_y - (price_diff_target * self.pixels_per_point)
-                    
-                    painter_font = QFont("Consolas", 8, QFont.Weight.Bold) if self.pixels_per_point < 18 else QFont("Consolas", 10, QFont.Weight.Bold)
-                    th = QFontMetrics(painter_font).height()
-                    row_height = self.pixels_per_point * self.min_tick
-                    
-                    box_y = int(y_target - max(row_height, th + 4)/2)
-                    box_h = int(max(row_height, th + 4))
-                    
-                    rect = QRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h)
-                    self.spawn_inline_edit(clicked_price, "NEW", rect)
+                    # MODIFIED: [UPPGIFT 1 - UX-Fix för Manuella nivåer]
+                    self.manual_levels[clicked_price] = "MAN"
+                    self.sig_dom_update_level.emit(clicked_price, "MAN", "ADD")
+                    return
                 return
 
-        # Tyst Flatten vid högerklick i prisstapeln
         if self.col_x['price'] <= x < self.col_x['sell']:
             if event.button() == Qt.MouseButton.RightButton:
                 self.sig_dom_flatten_all.emit()
@@ -341,7 +364,6 @@ class DOMWidget(QWidget):
         if not self.is_armed:
             return
 
-        # Detektera klick i Bid/Ask-kolumnerna
         if event.button() == Qt.MouseButton.LeftButton:
             if self.col_x['bid'] <= x < self.col_x['buy']:
                 self.sig_dom_join_bid.emit()
@@ -575,7 +597,6 @@ class DOMWidget(QWidget):
                 
                 painter.setPen(QPen(QColor("#ffffff")))
                 label = self.manual_levels.get(p_round, "M")
-                # MODIFIED: [UPPGIFT 4 - Justerade elidedText-marginaler för manual_levels]
                 display_text = metrics.elidedText(label, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
                 tw = metrics.horizontalAdvance(display_text)
                 painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw)/2), y + int(th/3), display_text)
@@ -591,7 +612,6 @@ class DOMWidget(QWidget):
                 
                 painter.setPen(QPen(QColor("#ffffff")))
                 label_auto = self.auto_levels.get(p_round, "AUTO")
-                # MODIFIED: [UPPGIFT 4 - Justerade elidedText-marginaler för auto_levels]
                 display_text_auto = metrics.elidedText(label_auto, Qt.TextElideMode.ElideRight, int(self.col_widths['lvl'] - 10))
                 tw_auto = metrics.horizontalAdvance(display_text_auto)
                 painter.drawText(int(self.col_x['lvl'] + (self.col_widths['lvl'] - tw_auto)/2), y + int(th/3), display_text_auto)
@@ -757,7 +777,6 @@ class DOMWidget(QWidget):
                     tw = metrics.horizontalAdvance(pos_str)
                     painter.drawText(int(self.col_x['sell'] + (self.col_widths['sell'] - tw)/2), y + int(th/3), pos_str)
             
-            # Rita Virtual TP (Turbo Trigger)
             if self.virtual_tp > 0 and abs(p_round - self.virtual_tp) < (self.min_tick * 0.1):
                 tt_str = "TT"
                 tt_color = QColor("#ffcc00")
@@ -765,7 +784,6 @@ class DOMWidget(QWidget):
                 tt_text_color = QColor("#888888") if self.pos_qty == 0 else QColor("#1a1a1a")
                 tt_pen_style = Qt.PenStyle.DashLine if self.pos_qty == 0 else Qt.PenStyle.SolidLine
                 
-                # Placera i Sells-kolumnen om Long (direction==1), Buys-kolumnen om Short (direction==-1)
                 if direction == 1:
                     painter.fillRect(int(self.col_x['sell']+2), box_y+2, int(self.col_widths['sell']-4), box_h-4, tt_bg)
                     painter.setPen(QPen(tt_color, 2 if self.pos_qty != 0 else 1, tt_pen_style))
@@ -787,7 +805,6 @@ class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("MJÖLNIR DOM")
-        # MODIFIED: [UPPGIFT 2 - Justerat fönsterbredden till 550]
         self.resize(550, 800) 
         self.setStyleSheet("background-color: #151515;")
         self.manager = parent.manager if parent else None
@@ -797,7 +814,6 @@ class MjolnirDOMWindow(QWidget):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(0) 
         
-        # Header omgjord till QFrame med QHBoxLayout
         self.header = QFrame()
         self.header.setFixedHeight(35)
         self.header.setStyleSheet("background-color: #151515; border-top-left-radius: 4px; border-top-right-radius: 4px;")
@@ -821,7 +837,6 @@ class MjolnirDOMWindow(QWidget):
         self.btn_save_levels.setFixedSize(35, 25)
         self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
         
-        # MODIFIED: [UPPGIFT 2 - Koppla till on_save_clicked istället]
         if self.manager:
             self.btn_save_levels.clicked.connect(self.on_save_clicked)
             
@@ -832,7 +847,6 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget = DOMWidget()
         layout.addWidget(self.dom_widget, stretch=1)
 
-        # Koppla signaler
         self.dom_widget.sig_dom_recenter.connect(self.recenter)
 
         if self.manager:
@@ -872,7 +886,6 @@ class MjolnirDOMWindow(QWidget):
         
         layout.addLayout(footer_layout)
 
-    # NEW: [UPPGIFT 2 - Metoder för sparning och knapp-blink]
     def on_save_clicked(self):
         if self.manager:
             self.manager.save_levels_to_disk()
@@ -965,7 +978,6 @@ class MjolnirDOMWindow(QWidget):
         self.dom_widget.pending_sl_nudge = data.get('pending_sl_nudge', 0.0)
         self.dom_widget.pending_sl_side = data.get('pending_sl_side', None)
         
-        # Uppdatera nivåer från managern
         self.dom_widget.manual_levels = data.get('manual_levels', {})
         self.dom_widget.auto_levels = data.get('auto_levels', {})
 
@@ -992,6 +1004,7 @@ class MjolnirDOMWindow(QWidget):
                 self.dom_widget.center_price += points_to_move
                 self.dom_widget.update()
 
+
 # =============================================================================
 # CORE INTERFACES & SIGNALS
 # =============================================================================
@@ -1005,11 +1018,11 @@ class ProviderSignals(QObject):
     error_occurred = pyqtSignal(int, str)
     contract_loaded = pyqtSignal(float, float) 
     order_filled = pyqtSignal(str, int, str, float)
-    # NEW: [UPPGIFT 2 - Signal för RTH-tider]
-    session_times = pyqtSignal(str, str) 
-    # NEW: [UPPGIFT 1 - Nya signaler för VWAP]
+    # MODIFIED: [UPPGIFT 2 - Utökad signal för tider och expiry]
+    session_times = pyqtSignal(str, str, str, str) 
     historical_vwap_data = pyqtSignal(list)
-    realtime_vwap_bar = pyqtSignal(float, float, float, int)
+    # MODIFIED: [UPPGIFT 3 - Lade till int(timestamp) först i signalen]
+    realtime_vwap_bar = pyqtSignal(int, float, float, float, int)
 
 class ExecutionProvider(ABC):
     def __init__(self):
@@ -1063,6 +1076,7 @@ class ExecutionProvider(ABC):
     def get_active_order_count(self) -> int:
         pass
 
+
 # =============================================================================
 # IBKR IMPLEMENTATION
 # =============================================================================
@@ -1073,7 +1087,6 @@ class IBKRProvider(ExecutionProvider):
         self.ib = IB()
         self.contract: Optional[Contract] = None
         self.mkt_data = None
-        # NEW: [UPPGIFT 2 - Referens för realtidsbars]
         self.rt_bar_req = None
         self._setup_events()
 
@@ -1088,25 +1101,23 @@ class IBKRProvider(ExecutionProvider):
         self.ib.pendingTickersEvent += self.on_ticker_update
         self.ib.execDetailsEvent += self.on_exec_details
         self.ib.disconnectedEvent += self.on_disconnect
-        # NEW: [UPPGIFT 2 - Koppla händelse för realtidsbars]
         self.ib.barUpdateEvent += self.on_bar_update
 
-    # MODIFIED: [UPPGIFT 1 - Korrigerade schemaläggningen av asynkrona tasks]
-    def start_vwap_routine(self, rth_start_dt):
+    def start_vwap_routine(self, session_start_dt):
         loop = asyncio.get_event_loop()
-        loop.create_task(self._async_fetch_vwap(rth_start_dt))
+        loop.create_task(self._async_fetch_vwap(session_start_dt))
 
-    # NEW: [UPPGIFT 2 - Asynkron historik-hämtning och realtidsbars]
-    async def _async_fetch_vwap(self, rth_start_dt):
+    async def _async_fetch_vwap(self, session_start_dt):
         if not self.contract or not self.is_connected():
             return
-        now = datetime.now(rth_start_dt.tzinfo)
-        diff = (now - rth_start_dt).total_seconds()
+        now = datetime.now(session_start_dt.tzinfo)
+        diff = (now - session_start_dt).total_seconds()
         if diff <= 0:
             return
             
         duration = f"{int(diff)} S"
         try:
+            # MODIFIED: [UPPGIFT 3 - Ändrade formatDate till 2 (Unix-timestamps)]
             bars = await self.ib.reqHistoricalDataAsync(
                 self.contract, 
                 endDateTime='', 
@@ -1114,12 +1125,15 @@ class IBKRProvider(ExecutionProvider):
                 barSizeSetting='5 secs', 
                 whatToShow='TRADES', 
                 useRTH=False, 
-                formatDate=1
+                formatDate=2
             )
             
             data_list = []
             for bar in bars:
+                # FIX: Säker konvertering av bar.date till unix timestamp
+                ts = int(bar.date.timestamp()) if hasattr(bar.date, 'timestamp') else int(bar.date)
                 data_list.append({
+                    'timestamp': ts,
                     'high': bar.high,
                     'low': bar.low,
                     'close': bar.close,
@@ -1131,13 +1145,14 @@ class IBKRProvider(ExecutionProvider):
         except Exception as e:
             self.signals.error_occurred.emit(-1, f"VWAP Fetch Error: {str(e)}")
 
-    # NEW: [UPPGIFT 2 - Realtidsbars uppdatering]
     def on_bar_update(self, bars, hasNewBar):
         if not hasNewBar:
             return
         if getattr(self, 'rt_bar_req', None) and bars == self.rt_bar_req:
             bar = bars[-1]
-            self.signals.realtime_vwap_bar.emit(bar.high, bar.low, bar.close, int(bar.volume))
+            # MODIFIED: [UPPGIFT 3 - Konvertera bar.time till Unix timestamp]
+            ts = int(bar.time.timestamp()) if hasattr(bar.time, 'timestamp') else int(bar.time)
+            self.signals.realtime_vwap_bar.emit(ts, bar.high, bar.low, bar.close, int(bar.volume))
 
     def connect(self, settings: dict) -> bool:
         port = settings.get('port', 7497)
@@ -1192,7 +1207,6 @@ class IBKRProvider(ExecutionProvider):
         try:
             if self.mkt_data:
                 self.ib.cancelMktData(self.mkt_data.contract)
-            # NEW: [UPPGIFT 2 - Avbryt realtidsbars]
             if getattr(self, 'rt_bar_req', None):
                 self.ib.cancelRealTimeBars(self.rt_bar_req)
                 self.rt_bar_req = None
@@ -1208,7 +1222,6 @@ class IBKRProvider(ExecutionProvider):
     def clear_contract(self):
         if self.mkt_data:
             self.ib.cancelMktData(self.mkt_data.contract)
-        # NEW: [UPPGIFT 2 - Avbryt realtidsbars]
         if getattr(self, 'rt_bar_req', None):
             self.ib.cancelRealTimeBars(self.rt_bar_req)
             self.rt_bar_req = None
@@ -1232,10 +1245,12 @@ class IBKRProvider(ExecutionProvider):
         self.ib.qualifyContracts(self.contract)
         self.signals.contract_loaded.emit(details.minTick, float(self.contract.multiplier or 1.0))
 
-        # NEW: [UPPGIFT 2 - Extrahera och skicka RTH-tider]
         liquid_hours = getattr(details, 'liquidHours', '')
         time_zone = getattr(details, 'timeZoneId', '')
-        self.signals.session_times.emit(liquid_hours, time_zone)
+        # MODIFIED: [UPPGIFT 2 - Hämta ETH-tider och Expiry]
+        trading_hours = getattr(details, 'tradingHours', '')
+        expiry = getattr(details.contract, 'lastTradeDateOrContractMonth', '')
+        self.signals.session_times.emit(liquid_hours, trading_hours, time_zone, expiry)
         
         if self.mkt_data:
             self.ib.cancelMktData(self.mkt_data.contract)
@@ -1458,14 +1473,14 @@ class SentinelManager(QObject):
         self.code_cooldown = False
         self.last_known_sl = 0.0 
         
-        # NEW: [UPPGIFT 3 - VWAP ackumulatorer]
-        self.vwap_sum_vol = 0
-        self.vwap_sum_pv = 0.0
-        # NEW: [UPPGIFT 1 - Ny ackumulator för varians]
-        self.vwap_sum_p2v = 0.0
-        
-        # NEW: [UPPGIFT 3 - Hållare för RTH-start]
-        self.rth_start_time = None
+        # MODIFIED: [UPPGIFT 4 - Dubbla VWAP-motorer]
+        self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
+        self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
+        self.eth_start_ts = 0
+        self.rth_start_ts = 0
+        self.current_expiry = ""
+        self.eth_time_str = ""
+        self.rth_time_str = ""
         
         self.post_trade_cooldown_active = False
         self.cooldown_remaining = 0
@@ -1512,96 +1527,138 @@ class SentinelManager(QObject):
         self.current_instrument_name = ""
         
         self.auto_levels = {}
+        self.current_vwap_stats = {}
 
         self.pending_nudges: Dict[str, float] = {}
         self.nudge_timer = QTimer()
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
 
-    # MODIFIED: [UPPGIFT 2 - Hantera historisk data för variansen]
+    # MODIFIED: [UPPGIFT 5 - Data-routing]
     def handle_historical_vwap(self, bars_list):
-        self.vwap_sum_vol = 0
-        self.vwap_sum_pv = 0.0
-        self.vwap_sum_p2v = 0.0
+        self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
+        self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
+        
         for bar in bars_list:
+            ts = bar['timestamp']
             typ_price = (bar['high'] + bar['low'] + bar['close']) / 3.0
-            self.vwap_sum_vol += bar['volume']
-            self.vwap_sum_pv += (typ_price * bar['volume'])
-            self.vwap_sum_p2v += (typ_price ** 2) * bar['volume']
+            vol = bar['volume']
             
-        if self.vwap_sum_vol > 0:
-            self._update_vwap_level()
-
-    # MODIFIED: [UPPGIFT 3 - Hantera realtids-data för variansen]
-    def handle_realtime_vwap(self, high, low, close, volume):
-        if volume == 0:
-            return
-        typ_price = (high + low + close) / 3.0
-        self.vwap_sum_vol += volume
-        self.vwap_sum_pv += (typ_price * volume)
-        self.vwap_sum_p2v += (typ_price ** 2) * volume
+            if ts >= self.eth_start_ts:
+                self.vwap_eth['vol'] += vol
+                self.vwap_eth['pv'] += (typ_price * vol)
+                self.vwap_eth['p2v'] += ((typ_price ** 2) * vol)
+                
+            if ts >= self.rth_start_ts:
+                self.vwap_rth['vol'] += vol
+                self.vwap_rth['pv'] += (typ_price * vol)
+                self.vwap_rth['p2v'] += ((typ_price ** 2) * vol)
+                
         self._update_vwap_level()
 
-    # MODIFIED: [UPPGIFT 4 - Beräkna och uppdatera Value Area i DOM]
-    def _update_vwap_level(self):
-        if self.vwap_sum_vol == 0:
+    # MODIFIED: [UPPGIFT 5 - Data-routing]
+    def handle_realtime_vwap(self, ts, high, low, close, volume):
+        if volume == 0:
             return
-        vwap_price = self.vwap_sum_pv / self.vwap_sum_vol
-        variance = (self.vwap_sum_p2v / self.vwap_sum_vol) - (vwap_price ** 2)
-        variance = max(0.0, variance)
-        sd = math.sqrt(variance)
+            
+        typ_price = (high + low + close) / 3.0
         
-        upper_band = vwap_price + sd
-        lower_band = vwap_price - sd
-        
-        snap_vwap = round(round(vwap_price / self.min_tick) * self.min_tick, 4)
-        snap_upper = round(round(upper_band / self.min_tick) * self.min_tick, 4)
-        snap_lower = round(round(lower_band / self.min_tick) * self.min_tick, 4)
-        
+        if ts >= self.eth_start_ts:
+            self.vwap_eth['vol'] += volume
+            self.vwap_eth['pv'] += (typ_price * volume)
+            self.vwap_eth['p2v'] += ((typ_price ** 2) * volume)
+            
+        if ts >= self.rth_start_ts:
+            self.vwap_rth['vol'] += volume
+            self.vwap_rth['pv'] += (typ_price * volume)
+            self.vwap_rth['p2v'] += ((typ_price ** 2) * volume)
+            
+        self._update_vwap_level()
+
+    # MODIFIED: [UPPGIFT 5 - Value Area-matematik och stackad nivåhantering]
+    def _update_vwap_level(self):
         self.auto_levels.clear()
-        self.auto_levels[snap_vwap] = "VWAP"
-        self.auto_levels[snap_upper] = "+1 SD"
-        self.auto_levels[snap_lower] = "-1 SD"
+        self.current_vwap_stats.clear()
+        
+        def add_stacked_level(price, text):
+            target = price
+            offset_multiplier = 1
+            while target in self.auto_levels:
+                test_pos = round(price + (offset_multiplier * self.min_tick), 4)
+                if test_pos not in self.auto_levels:
+                    target = test_pos
+                    break
+                test_neg = round(price - (offset_multiplier * self.min_tick), 4)
+                if test_neg not in self.auto_levels:
+                    target = test_neg
+                    break
+                offset_multiplier += 1
+            self.auto_levels[target] = text
+
+        for engine, prefix, suffix in [(self.vwap_eth, "eth", " ETH"), (self.vwap_rth, "rth", " RTH")]:
+            if engine['vol'] > 0:
+                vwap_p = engine['pv'] / engine['vol']
+                var = max(0.0, (engine['p2v'] / engine['vol']) - (vwap_p ** 2))
+                sd = math.sqrt(var)
+                
+                snap_v = round(round(vwap_p / self.min_tick) * self.min_tick, 4)
+                snap_u = round(round((vwap_p + sd) / self.min_tick) * self.min_tick, 4)
+                snap_l = round(round((vwap_p - sd) / self.min_tick) * self.min_tick, 4)
+                
+                add_stacked_level(snap_v, f"VWAP{suffix}")
+                add_stacked_level(snap_u, f"+1SD{suffix}")
+                add_stacked_level(snap_l, f"-1SD{suffix}")
+                
+                self.current_vwap_stats[f"{prefix}_vwap"] = vwap_p
+                self.current_vwap_stats[f"{prefix}_upper"] = vwap_p + sd
+                self.current_vwap_stats[f"{prefix}_lower"] = vwap_p - sd
+                
         self.update_ui_state()
 
-    # MODIFIED: [UPPGIFT 2 - Isolera tids-parsningen från VWAP-anropet]
-    def handle_session_times(self, liquid_hours: str, timezone_str: str):
-        if not liquid_hours or not timezone_str:
-            return
-            
-        dt_local = None
+    # MODIFIED: [UPPGIFT 4 - Parsa både ETH och RTH och starta från ETH]
+    def handle_session_times(self, liquid_hours: str, trading_hours: str, timezone_str: str, expiry: str):
+        self.current_expiry = expiry
+        dt_eth = None
+        dt_rth = None
         
-        try:
-            segments = liquid_hours.split(';')
-            first_valid = None
-            for seg in segments:
-                if '-' in seg and 'CLOSED' not in seg:
-                    first_valid = seg
-                    break
-                    
-            if first_valid:
-                start_str = first_valid.split('-')[0]
-                if ':' in start_str:
-                    date_part, time_part = start_str.split(':')
-                    exchange_tz = ZoneInfo(timezone_str)
-                    dt_exchange = datetime.strptime(f"{date_part}{time_part}", "%Y%m%d%H%M")
-                    dt_exchange = dt_exchange.replace(tzinfo=exchange_tz)
-                    
-                    local_tz = datetime.now().astimezone().tzinfo
-                    dt_local = dt_exchange.astimezone(local_tz)
-                    
-                    self.rth_start_time = dt_local
-                    self.log_signal.emit(f"SYSTEM: RTH detekterad. Start: {dt_local.strftime('%H:%M')} lokal tid.")
-        except Exception as e:
-            self.log_signal.emit(f"ERROR: Kunde inte parsa RTH-tider - {str(e)}")
-            return
-            
-        if dt_local:
-            now = datetime.now(dt_local.tzinfo)
-            if now >= self.rth_start_time:
+        def parse_hours(hours_str):
+            if not hours_str or not timezone_str: return None
+            try:
+                segments = hours_str.split(';')
+                first_valid = None
+                for seg in segments:
+                    if '-' in seg and 'CLOSED' not in seg:
+                        first_valid = seg
+                        break
+                if first_valid:
+                    start_str = first_valid.split('-')[0]
+                    if ':' in start_str:
+                        date_part, time_part = start_str.split(':')
+                        exchange_tz = ZoneInfo(timezone_str)
+                        dt_exchange = datetime.strptime(f"{date_part}{time_part}", "%Y%m%d%H%M")
+                        dt_exchange = dt_exchange.replace(tzinfo=exchange_tz)
+                        return dt_exchange.astimezone(datetime.now().astimezone().tzinfo)
+            except:
+                pass
+            return None
+
+        dt_eth = parse_hours(trading_hours)
+        dt_rth = parse_hours(liquid_hours)
+        
+        self.eth_start_ts = int(dt_eth.timestamp()) if dt_eth else 0
+        self.rth_start_ts = int(dt_rth.timestamp()) if dt_rth else 0
+        
+        self.eth_time_str = dt_eth.strftime('%H:%M') if dt_eth else "N/A"
+        self.rth_time_str = dt_rth.strftime('%H:%M') if dt_rth else "N/A"
+        
+        self.log_signal.emit(f"SYSTEM: Tider detekterade. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} lokal tid.")
+
+        if dt_eth:
+            now = datetime.now(dt_eth.tzinfo)
+            if now >= dt_eth:
                 for p in self.providers:
                     if p.is_connected() and hasattr(p, 'start_vwap_routine'):
-                        p.start_vwap_routine(self.rth_start_time)
+                        p.start_vwap_routine(dt_eth)
 
     def _get_levels_file_path(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "levels.json")
@@ -1631,7 +1688,6 @@ class SentinelManager(QObject):
         if not self.current_instrument_name:
             return
         path = self._get_levels_file_path()
-        # MODIFIED: [UPPGIFT 3 - Bekräftat att gamla nivåer rensas (clear) innan omladdning]
         self.manual_levels.clear()
         
         if os.path.exists(path):
@@ -1669,7 +1725,6 @@ class SentinelManager(QObject):
         provider.signals.error_occurred.connect(self.handle_error)
         provider.signals.contract_loaded.connect(self.handle_contract_info)
         provider.signals.order_filled.connect(self.handle_order_fill)
-        # NEW: [UPPGIFT 3 - Koppla VWAP-signaler]
         provider.signals.historical_vwap_data.connect(self.handle_historical_vwap)
         provider.signals.realtime_vwap_bar.connect(self.handle_realtime_vwap)
         self.providers.append(provider)
@@ -1752,7 +1807,6 @@ class SentinelManager(QObject):
         self.log_signal.emit(f"CADET: SL låst till exakt fyllnad ({exact_sl})")
         
     def handle_level_update(self, price, text, action):
-        # MODIFIED: [UPPGIFT 3 - Bekräftat att ingen filsparning sker här. Endast i minnet.]
         if action == "ADD" or action == "EDIT":
             self.manual_levels[price] = text
         elif action == "DELETE":
@@ -2000,7 +2054,7 @@ class SentinelManager(QObject):
         elif pending_direction != 0:
             direction_to_send = pending_direction
 
-        # MODIFIED: [UPPGIFT 4 - Bekräftat att auto_levels stöder redan strängar som 'VWAP 15:30']
+        # MODIFIED: [UPPGIFT 5 - Data-routing och Value Area till GUI]
         data = {
             'pos': int(self.pos_qty),
             'avg': self.avg_price,
@@ -2039,7 +2093,12 @@ class SentinelManager(QObject):
             'virtual_tp': expected_tp if self.use_virtual_tp else 0.0,
             
             'manual_levels': self.manual_levels,
-            'auto_levels': self.auto_levels
+            'auto_levels': self.auto_levels,
+            
+            'vwap_stats': getattr(self, 'current_vwap_stats', {}),
+            'expiry': self.current_expiry,
+            'eth_time': getattr(self, 'eth_time_str', 'N/A'),
+            'rth_time': getattr(self, 'rth_time_str', 'N/A')
         }
 
         if self.pos_qty != 0:
@@ -2053,7 +2112,6 @@ class SentinelManager(QObject):
 
     def handle_price(self, p):
         self.current_price = p
-        # MODIFIED: [UPPGIFT 3 - Borttagen tillfällig VWAP-placeholder]
 
         if self.pos_qty == 0: 
             self.update_ui_state()
@@ -2938,6 +2996,9 @@ class MjolnirGUI(QWidget):
         self.ib_provider = IBKRProvider()
         self.manager.add_provider(self.ib_provider)
         
+        # NEW: [UPPGIFT 6 - Skapa instans av detalj-fönstret]
+        self.details_window = InstrumentDetailsWindow(self)
+        
         self.init_ui()
         self.load_instruments()
         self.load_settings()
@@ -2956,7 +3017,8 @@ class MjolnirGUI(QWidget):
         self.setup_hotkeys()
         self.setup_connections()
         
-        self.toggle_dom()
+        self.dom_window.show()
+        self.dom_window.recenter()
 
     def init_ui(self):
         self.setWindowTitle("MJÖLNIR - THE CADET")
@@ -3023,10 +3085,11 @@ class MjolnirGUI(QWidget):
         self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
         self.btn_inspector.clicked.connect(self.toggle_inspector)
 
-        self.btn_dom = QPushButton("📊 DOM")
-        self.btn_dom.setFixedSize(65, 25)
-        self.btn_dom.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
-        self.btn_dom.clicked.connect(self.toggle_dom)
+        # MODIFIED: [UPPGIFT 6 - Ersatte DOM-knappen med INST-knappen]
+        self.btn_details = QPushButton("📊 INST")
+        self.btn_details.setFixedSize(65, 25)
+        self.btn_details.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
+        self.btn_details.clicked.connect(self.toggle_details)
 
         self.dom_height_preset = 800 
         self.btn_dom_height = QPushButton(f"↕ {self.dom_height_preset}px")
@@ -3035,7 +3098,7 @@ class MjolnirGUI(QWidget):
         self.btn_dom_height.clicked.connect(self.cycle_dom_height)
         
         tools_layout.addWidget(self.btn_inspector)
-        tools_layout.addWidget(self.btn_dom)
+        tools_layout.addWidget(self.btn_details)
         tools_layout.addWidget(self.btn_dom_height)
         left_layout.addLayout(tools_layout)
         
@@ -3613,6 +3676,10 @@ class MjolnirGUI(QWidget):
         if self.active_instrument_name:
             self.dom_window.header_title.setText(f"MICRO-DOM ({self.active_instrument_name})")
 
+        # MODIFIED: [UPPGIFT 6 - Uppdatera fönstret om det är öppet]
+        if self.details_window.isVisible():
+            self.details_window.update_details(data)
+
     def on_instrument_selected(self, name):
         if name == "-- SELECT INSTRUMENT --":
             self.btn_lock.setEnabled(False)
@@ -3645,12 +3712,12 @@ class MjolnirGUI(QWidget):
         else:
             self.inspector_window.show()
 
-    def toggle_dom(self):
-        if self.dom_window.isVisible():
-            self.dom_window.hide()
+    # NEW: [UPPGIFT 6 - Ny metod för att toggla detalj-fönstret]
+    def toggle_details(self):
+        if self.details_window.isVisible():
+            self.details_window.hide()
         else:
-            self.dom_window.show()
-            self.dom_window.recenter()
+            self.details_window.show()
 
     def cycle_dom_height(self):
         heights = [800, 1080, 1440, 1800]
