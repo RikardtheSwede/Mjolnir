@@ -32,7 +32,7 @@ from ib_async import *
 
 
 class MarqueeLabel(QLabel):
-    """Specialetikett som automatiskt rullar text om den är för lång."""
+    """Special label that automatically scrolls text if it is too long."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._full_text = ""
@@ -70,8 +70,8 @@ class MarqueeLabel(QLabel):
 
 class TWSInspectorWindow(QWidget):
     """
-    Ett fristående fönster för att övervaka order som upptäcks på IBKR-servern.
-    Fungerar som en röntgen för 'The Gentle Sentinel'.
+    A standalone window to monitor orders detected on the IBKR server.
+    Acts as an x-ray for 'The Gentle Sentinel'.
     """
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
@@ -101,7 +101,7 @@ class TWSInspectorWindow(QWidget):
         html = []
         
         if not orders:
-            html.append("<span style='color: #888;'>Inga aktiva ordrar för valt instrument.</span><br><br>")
+            html.append("<span style='color: #888;'>No active orders for selected instrument.</span><br><br>")
         else:
             html.append("<span style='color: #00ff00; font-weight: bold;'>ACTIVE INSTRUMENT ORDERS:</span><br>")
             for o in orders:
@@ -114,7 +114,7 @@ class TWSInspectorWindow(QWidget):
                 html.append(f"<span style='color: #aaaaaa;'>&nbsp;• {item['text']}</span><br>")
 
         if not orders and not other_activity:
-            self.order_display.setText("Väntar på data / Kontot är flat...")
+            self.order_display.setText("Waiting for data / Account is flat...")
         else:
             self.order_display.setText("".join(html))
             
@@ -197,7 +197,6 @@ class InstrumentDetailsWindow(QWidget):
         self.display_lbl.setText("".join(html))
 
 
-# NEW: [UPPGIFT 1 - Skapa fönstret DOMHelpWindow med extern filhantering]
 class DOMHelpWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
@@ -223,7 +222,7 @@ class DOMHelpWindow(QWidget):
             except Exception as e:
                 return f"<p style='color:red;'>Error reading manual: {str(e)}</p>"
         else:
-            fallback_text = "<h2 style='color:#ff4444;'>Manual saknas</h2><p>Vänligen skapa eller redigera filen <b>dom_manual.html</b> i samma mapp som skriptet.</p>"
+            fallback_text = "<h2 style='color:#ff4444;'>Manual missing</h2><p>Please create or edit the file <b>dom_manual.html</b> in the same folder as the script.</p>"
             try:
                 with open(path, 'w', encoding='utf-8') as f:
                     f.write(fallback_text)
@@ -233,7 +232,7 @@ class DOMHelpWindow(QWidget):
 
 
 class DOMWidget(QWidget):
-    """Kärngrafikmotorn för Price Ladder - Pro Jigsaw Layout."""
+    """Core graphics engine for Price Ladder - Pro Jigsaw Layout."""
     
     sig_dom_recenter = pyqtSignal()
     sig_dom_join_bid = pyqtSignal()
@@ -259,7 +258,8 @@ class DOMWidget(QWidget):
         self.min_tick = 0.25
         self.pixels_per_point = 80  
         
-        self.col_widths = {'bid': 40, 'buy': 60, 'price': 80, 'sell': 60, 'ask': 40, 'lvl': 110}
+        # MODIFIED: Added 'vp' to col_widths
+        self.col_widths = {'bid': 40, 'buy': 60, 'price': 80, 'sell': 60, 'ask': 40, 'lvl': 110, 'vp': 80}
         self.col_x = {}
 
         self.my_buys = {}
@@ -285,6 +285,10 @@ class DOMWidget(QWidget):
         self.auto_levels = {}
         self.is_armed = False 
         
+        # NEW: Added vp variables
+        self.vp_data = {}
+        self.vp_max = 0
+
         self.active_editor = None
         self.setStyleSheet("background-color: #0d0d0d;")
 
@@ -336,6 +340,8 @@ class DOMWidget(QWidget):
         self.col_x['sell'] = self.col_x['price'] + self.col_widths['price']
         self.col_x['ask'] = self.col_x['sell'] + self.col_widths['sell'] 
         self.col_x['lvl'] = self.col_x['ask'] + self.col_widths['ask']
+        # MODIFIED: Calculate X coordinate for Volume Profile column
+        self.col_x['vp'] = self.col_x['lvl'] + self.col_widths['lvl']
 
     def mousePressEvent(self, event):
         if self.center_price == 0.0:
@@ -510,6 +516,8 @@ class DOMWidget(QWidget):
         painter.drawLine(int(self.col_x['ask']), 0, int(self.col_x['ask']), h) 
         painter.drawLine(int(self.col_x['ask'] + self.col_widths['ask']), 0, int(self.col_x['ask'] + self.col_widths['ask']), h) 
         painter.drawLine(int(self.col_x['lvl'] + self.col_widths['lvl']), 0, int(self.col_x['lvl'] + self.col_widths['lvl']), h) 
+        # MODIFIED: Added vp separator line
+        painter.drawLine(int(self.col_x['vp'] + self.col_widths['vp']), 0, int(self.col_x['vp'] + self.col_widths['vp']), h) 
 
         header_bg = QColor("#004466") if self.is_armed else QColor(20, 20, 20, 255)
         painter.fillRect(0, 0, w, header_h, header_bg) 
@@ -530,6 +538,8 @@ class DOMWidget(QWidget):
         draw_header("SEL", self.col_x['sell'], self.col_widths['sell'])
         draw_header("ASK", self.col_x['ask'], self.col_widths['ask'])
         draw_header("LVL", self.col_x['lvl'], self.col_widths['lvl'])
+        # MODIFIED: Added VP header
+        draw_header("VP", self.col_x['vp'], self.col_widths['vp'])
         
         painter.setPen(QPen(QColor("#444444") if not self.is_armed else QColor("#0088aa")))
         painter.drawLine(0, header_h, w, header_h)
@@ -714,9 +724,9 @@ class DOMWidget(QWidget):
                 painter.setPen(QPen(pts_color))
                 pw = metrics.horizontalAdvance(pts_str)
                 
-                if direction == 1: # Long
+                if direction == 1: 
                     painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - pw)/2), y + int(th/3), pts_str)
-                elif direction == -1: # Short
+                elif direction == -1: 
                     painter.drawText(int(self.col_x['sell'] + (self.col_widths['sell'] - pw)/2), y + int(th/3), pts_str)
             
             if is_bid and self.bid_size > 0:
@@ -851,6 +861,13 @@ class DOMWidget(QWidget):
                     painter.setPen(QPen(tt_text_color))
                     tw = metrics.horizontalAdvance(tt_str)
                     painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - tw)/2), y + int(th/3), tt_str)
+
+            # NEW: Render Volume Profile bar
+            if self.min_tick > 0:
+                bucket_p = round(p_round / (self.min_tick * 4)) * (self.min_tick * 4)
+                if bucket_p in self.vp_data and self.vp_max > 0:
+                    w_bar = (self.vp_data[bucket_p] / self.vp_max) * (self.col_widths['vp'] - 10)
+                    painter.fillRect(int(self.col_x['vp'] + 2), box_y + 1, int(w_bar), box_h - 2, QColor(0, 150, 255, 40))
                     
             p += self.min_tick
 
@@ -879,7 +896,8 @@ class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Window)
         self.setWindowTitle("MJÖLNIR DOM")
-        self.resize(550, 800) 
+        # MODIFIED: Increased width for VP column
+        self.resize(680, 800) 
         self.setStyleSheet("background-color: #151515;")
         self.manager = parent.manager if parent else None
         self.main_gui = parent 
@@ -907,7 +925,6 @@ class MjolnirDOMWindow(QWidget):
         self.header_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         header_layout.addWidget(self.header_title, stretch=1)
         
-        # MODIFIED: [UPPGIFT 2 - Justerad storlek på sparaknappen]
         self.btn_save_levels = QPushButton("💾")
         self.btn_save_levels.setFixedSize(25, 25)
         self.btn_save_levels.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
@@ -917,7 +934,6 @@ class MjolnirDOMWindow(QWidget):
             
         header_layout.addWidget(self.btn_save_levels)
 
-        # NEW: [UPPGIFT 2 - Integrera hjälpknappen i DOM:en]
         self.btn_help = QPushButton("?")
         self.btn_help.setFixedSize(25, 25)
         self.btn_help.setStyleSheet("background-color: #2a2a2a; color: #ffffff; border: 1px solid #444; border-radius: 4px;")
@@ -1063,6 +1079,10 @@ class MjolnirDOMWindow(QWidget):
         
         self.dom_widget.manual_levels = data.get('manual_levels', {})
         self.dom_widget.auto_levels = data.get('auto_levels', {})
+
+        # NEW: Update VP data
+        self.dom_widget.vp_data = data.get('vp_data', {})
+        self.dom_widget.vp_max = data.get('vp_max', 0)
 
         if getattr(self, '_auto_center', True) and current > 0:
             self.dom_widget.center_price = current
@@ -1632,6 +1652,10 @@ class SentinelManager(QObject):
         self.ib_locked = False
         self.htf_levels = {}
         
+        # NEW: Volume profile data tracking
+        self.vp_data = {}
+        self.vp_max_vol = 0
+        
         self.post_trade_cooldown_active = False
         self.cooldown_remaining = 0
         self.cooldown_total = 10
@@ -1720,6 +1744,12 @@ class SentinelManager(QObject):
             self.vwap_rth['vol'] += volume
             self.vwap_rth['pv'] += (typ_price * volume)
             self.vwap_rth['p2v'] += ((typ_price ** 2) * volume)
+            
+            # NEW: Update Volume Profile buckets
+            if self.min_tick > 0:
+                bucket_price = round(close / (self.min_tick * 4)) * (self.min_tick * 4)
+                self.vp_data[bucket_price] = self.vp_data.get(bucket_price, 0) + volume
+                self.vp_max_vol = max(self.vp_max_vol, self.vp_data[bucket_price])
             
         if not self.ib_locked and self.rth_start_ts > 0:
             if self.rth_start_ts <= ts < self.rth_start_ts + 3600:
@@ -1823,6 +1853,10 @@ class SentinelManager(QObject):
         self.ib_low = 1e9
         self.ib_locked = False
         
+        # MODIFIED: Reset Volume Profile data on new session
+        self.vp_data.clear()
+        self.vp_max_vol = 0
+        
         def parse_hours(hours_str):
             if not hours_str or not timezone_str: return None
             try:
@@ -1853,7 +1887,7 @@ class SentinelManager(QObject):
         self.eth_time_str = dt_eth.strftime('%H:%M') if dt_eth else "N/A"
         self.rth_time_str = dt_rth.strftime('%H:%M') if dt_rth else "N/A"
         
-        self.log_signal.emit(f"SYSTEM: Tider detekterade. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} ({timezone_str}).")
+        self.log_signal.emit(f"SYSTEM: Times detected. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} ({timezone_str}).")
 
         if dt_eth:
             now = datetime.now(dt_eth.tzinfo)
@@ -1886,7 +1920,7 @@ class SentinelManager(QObject):
             with open(path, 'w') as f:
                 json.dump(data, f, indent=4)
         except Exception as e:
-            self.log_signal.emit(f"ERROR: Kunde inte spara levels - {str(e)}")
+            self.log_signal.emit(f"ERROR: Could not save levels - {str(e)}")
 
     def load_levels_from_disk(self):
         if not self.current_instrument_name:
@@ -1902,14 +1936,14 @@ class SentinelManager(QObject):
                 for k, v in inst_data.items():
                     self.manual_levels[float(k)] = v
             except Exception as e:
-                self.log_signal.emit(f"ERROR: Kunde inte ladda levels - {str(e)}")
+                self.log_signal.emit(f"ERROR: Could not load levels - {str(e)}")
         self.update_ui_state()
 
     def _start_grace_period(self):
         self.sl_locked = False
         self.grace_time_remaining = 200 
         self.grace_timer.start(100)
-        self.log_signal.emit("CADET: 20s SL Grace Period startad. 🔓")
+        self.log_signal.emit("CADET: 20s SL Grace Period started. 🔓")
         self.update_ui_state()
 
     def _tick_grace_period(self):
@@ -1917,7 +1951,7 @@ class SentinelManager(QObject):
         if self.grace_time_remaining <= 0:
             self.grace_timer.stop()
             self.sl_locked = True
-            self.log_signal.emit("CADET: Grace Period utgått. SL-riktning låst. 🔒")
+            self.log_signal.emit("CADET: Grace Period expired. SL direction locked. 🔒")
         self.update_ui_state()
 
     def add_provider(self, provider: ExecutionProvider):
@@ -2010,7 +2044,7 @@ class SentinelManager(QObject):
             if p.is_connected():
                 p.modify_order('SL', exact_sl)
                 
-        self.log_signal.emit(f"CADET: SL låst till exakt fyllnad ({exact_sl})")
+        self.log_signal.emit(f"CADET: SL locked to exact fill ({exact_sl})")
         
     def handle_level_update(self, price, text, action):
         if action == "ADD" or action == "EDIT":
@@ -2124,7 +2158,7 @@ class SentinelManager(QObject):
                     for p in self.providers:
                         if p.is_connected():
                             p.modify_order('SL', expected_sl)
-                            self.log_signal.emit(f"MAGNETIC: Snappade väntande SL till {self.sl_points:.2f} pts.")
+                            self.log_signal.emit(f"MAGNETIC: Snapped pending SL to {self.sl_points:.2f} pts.")
 
             elif self.pos_qty != 0:
                 self._last_pending_anchor = 0.0 
@@ -2132,7 +2166,7 @@ class SentinelManager(QObject):
                     for p in self.providers:
                         if p.is_connected():
                             p.modify_order('SL', master_sl['price'], new_qty=abs(self.pos_qty))
-                            self.log_signal.emit(f"SYNC: Justerade Master SL till {abs(self.pos_qty)} kontrakt.")
+                            self.log_signal.emit(f"SYNC: Adjusted Master SL to {abs(self.pos_qty)} contracts.")
 
             if len(active_stops) > 1:
                 has_multiple_sl = True
@@ -2140,7 +2174,7 @@ class SentinelManager(QObject):
                     for p in self.providers:
                         if p.is_connected() and hasattr(p, 'cancel_order_by_id'):
                             p.cancel_order_by_id(extra_sl['id'])
-                            self.log_signal.emit(f"MERGE: Avbröt överlappande SL-order.")
+                            self.log_signal.emit(f"MERGE: Cancelled overlapping SL order.")
         else:
             if self.pos_qty != 0:
                 self._last_pending_anchor = 0.0
@@ -2260,6 +2294,7 @@ class SentinelManager(QObject):
         elif pending_direction != 0:
             direction_to_send = pending_direction
 
+        # MODIFIED: Added vp_data and vp_max to UI payload
         data = {
             'pos': int(self.pos_qty),
             'avg': self.avg_price,
@@ -2305,7 +2340,10 @@ class SentinelManager(QObject):
             'ib_stats': {'high': self.ib_high, 'low': self.ib_low, 'locked': getattr(self, 'ib_locked', False)},
             'expiry': self.current_expiry,
             'eth_time': getattr(self, 'eth_time_str', 'N/A'),
-            'rth_time': getattr(self, 'rth_time_str', 'N/A')
+            'rth_time': getattr(self, 'rth_time_str', 'N/A'),
+            
+            'vp_data': self.vp_data,
+            'vp_max': self.vp_max_vol
         }
 
         if self.pos_qty != 0:
@@ -2339,7 +2377,7 @@ class SentinelManager(QObject):
 
         if self.use_virtual_tp and self.virtual_tp > 0.0 and not self.turbo_mode:
             if (direction == 1 and p >= self.virtual_tp) or (direction == -1 and p <= self.virtual_tp):
-                self.log_signal.emit(f"🎯 VIRTUAL TP HIT ({self.virtual_tp:.2f}): Aktiverar Turbo Trail!")
+                self.log_signal.emit(f"🎯 VIRTUAL TP HIT ({self.virtual_tp:.2f}): Activating Turbo Trail!")
                 self.trail_active = True
                 self.turbo_mode = True
                 self.current_trail_distance = self.tight_trail_points
@@ -2464,7 +2502,7 @@ class SentinelManager(QObject):
 
     
     def _validate_scale_price(self, action: str, new_price: float) -> str:
-        """Ser till att nya ordrar läggs korrekt mellan Anchor och SL"""
+        """Ensures new orders are placed correctly between Anchor and SL"""
         if self.pos_qty == 0: 
             anchor_price = 0.0
             for p in self.providers:
@@ -2480,9 +2518,9 @@ class SentinelManager(QObject):
                                 
             if anchor_price > 0.0:
                 if action == "BUY" and new_price >= anchor_price:
-                    return "Scale måste vara BAKOM Anchor!"
+                    return "Scale must be BEHIND Anchor!"
                 if action == "SELL" and new_price <= anchor_price:
-                    return "Scale måste vara BAKOM Anchor!"
+                    return "Scale must be BEHIND Anchor!"
                     
         current_sl = 0.0
         for p in self.providers:
@@ -2493,21 +2531,21 @@ class SentinelManager(QObject):
                 
         if current_sl > 0.0:
             if action == "BUY" and new_price <= current_sl:
-                return "Scale kan inte placeras BORTOM Stop Loss!"
+                return "Scale cannot be placed BEYOND Stop Loss!"
             if action == "SELL" and new_price >= current_sl:
-                return "Scale kan inte placeras BORTOM Stop Loss!"
+                return "Scale cannot be placed BEYOND Stop Loss!"
 
         return ""
 
     def execute_trade(self, action: str):
         if not self.is_armed:
             self.arm_reject_signal.emit()
-            self.log_signal.emit("REJECTED: Systemet är i SAFE-läge. Armera först.")
+            self.log_signal.emit("REJECTED: System is in SAFE mode. Arm first.")
             return
             
         if getattr(self, 'post_trade_cooldown_active', False):
             self.cooldown_reject_signal.emit()
-            self.log_signal.emit("REJECTED: Post-trade cooldown aktiv. ⏳")
+            self.log_signal.emit("REJECTED: Post-trade cooldown active. ⏳")
             return
 
         if self.code_cooldown:
@@ -2532,7 +2570,7 @@ class SentinelManager(QObject):
                 
         if self._is_over_max_capacity(side, qty):
             self.max_qty_reject_signal.emit() 
-            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) uppnådd.")
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
             return
             
         pending_dir = self._get_pending_direction()
@@ -2545,7 +2583,7 @@ class SentinelManager(QObject):
                 if side == pending_dir:
                     is_scaling = True
                 else:
-                    self.log_signal.emit("REJECTED: Avbryt motsatta väntande ordrar först.")
+                    self.log_signal.emit("REJECTED: Cancel opposing pending orders first.")
                     return
 
         if is_scaling:
@@ -2572,11 +2610,11 @@ class SentinelManager(QObject):
     def _sniper_entry(self, action: str):
         if not self.is_armed:
             self.arm_reject_signal.emit()
-            self.log_signal.emit("REJECTED: Systemet är i SAFE-läge. Armera först.")
+            self.log_signal.emit("REJECTED: System is in SAFE mode. Arm first.")
             return
 
         if self.pos_qty == 0 and self._get_pending_direction() != 0:
-            self.log_signal.emit("REJECTED: Avbryt väntande Master innan Join Bid/Ask.")
+            self.log_signal.emit("REJECTED: Cancel pending Master before Join Bid/Ask.")
             return
 
         qty = self.trade_qty
@@ -2608,7 +2646,7 @@ class SentinelManager(QObject):
 
         if self._is_over_max_capacity(side, qty):
             self.max_qty_reject_signal.emit()
-            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) uppnådd.")
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
             return
             
         lmt = round(exact_p, 4)
@@ -2623,7 +2661,7 @@ class SentinelManager(QObject):
                 if side == pending_dir:
                     is_scaling = True
                 else:
-                    self.log_signal.emit("REJECTED: Avbryt motsatta väntande ordrar först.")
+                    self.log_signal.emit("REJECTED: Cancel opposing pending orders first.")
                     return
 
         if is_scaling:
@@ -2635,13 +2673,13 @@ class SentinelManager(QObject):
             for p in self.providers:
                 if p.is_connected():
                     p.place_single_order(action, qty, lmt, "SCALE")
-            self.log_signal.emit(f"SNIPER: Joinade {action} vid {lmt:.2f} (SCALE)")
+            self.log_signal.emit(f"SNIPER: Joined {action} at {lmt:.2f} (SCALE)")
         else:
             sl_price = round(round((lmt - (self.sl_points * side)) / self.min_tick) * self.min_tick, 4)
             for p in self.providers:
                 if p.is_connected():
                     p.place_bracket(action, qty, lmt, 0.0, sl_price)
-            self.log_signal.emit(f"SNIPER: Joinade {action} vid {lmt:.2f} med Guard SL vid {sl_price:.2f}")
+            self.log_signal.emit(f"SNIPER: Joined {action} at {lmt:.2f} with Guard SL at {sl_price:.2f}")
 
     def execute_cancel_working(self):
         count = 0
@@ -2655,13 +2693,13 @@ class SentinelManager(QObject):
                                 count += 1
         
         if count > 0:
-            self.log_signal.emit(f"CANCEL: Tog bort {count} väntande entré-order.")
+            self.log_signal.emit(f"CANCEL: Removed {count} pending entry orders.")
         else:
-            self.log_signal.emit("CANCEL: Inga väntande entré-order hittades.")
+            self.log_signal.emit("CANCEL: No pending entry orders found.")
 
     def execute_flatten(self):
-        """Standard DOM-operation: Tyst, snabb stängning och rensning."""
-        self.log_signal.emit("DOM: Flatten & Cancel exekverad.")
+        """Standard DOM operation: Quiet, fast closing and clearing."""
+        self.log_signal.emit("DOM: Flatten & Cancel executed.")
         for p in self.providers:
             if p.is_connected(): 
                 p.cancel_all()
@@ -2687,7 +2725,7 @@ class SentinelManager(QObject):
         self.update_ui_state()
 
     def execute_close(self):
-        """Nödknappen. Samma logik som flatten, men varnar högt i loggen."""
+        """Emergency button. Same logic as flatten, but warns loudly in the log."""
         self.log_signal.emit("API: Emergency Close Triggered! 🚨")
         for p in self.providers:
             if p.is_connected(): 
@@ -2706,7 +2744,7 @@ class SentinelManager(QObject):
                     slip_ticks = max(4, math.ceil(self.slippage / self.min_tick))
                     lmt = round(self.current_price + (slip_ticks * self.min_tick * side), 4)
                     
-                    self.log_signal.emit(f"API: Exekverar Marketable Close ({action} @ {lmt:.2f})")
+                    self.log_signal.emit(f"API: Executing Marketable Close ({action} @ {lmt:.2f})")
                     p.place_single_order(action, abs(self.pos_qty), lmt, "CLOSE")
         
         self.sl_points = self.saved_sl_points
@@ -2726,7 +2764,7 @@ class SentinelManager(QObject):
         for p in self.providers:
             if p.is_connected():
                 p.modify_order('SL', target_price)
-        self.log_signal.emit(f"MANUAL BE: Skydd vid {target_price}")
+        self.log_signal.emit(f"MANUAL BE: Protection at {target_price}")
     
     def escalate_trail(self):
         if self.pos_qty == 0:
@@ -2737,12 +2775,12 @@ class SentinelManager(QObject):
             self.turbo_mode = False
             self.peak_price = self.current_price
             self.current_trail_distance = self.trail_points
-            self.log_signal.emit(f"TRAIL AKTIV: {self.trail_points} pts.")
+            self.log_signal.emit(f"TRAIL ACTIVE: {self.trail_points} pts.")
         elif not self.turbo_mode:
             self.turbo_mode = True
             self.current_trail_distance = self.tight_trail_points
             self.peak_price = self.current_price 
-            self.log_signal.emit(f"TURBO AKTIV: {self.tight_trail_points} pts.")
+            self.log_signal.emit(f"TURBO ACTIVE: {self.tight_trail_points} pts.")
             self.process_trailing_stop()
             
         self.update_ui_state()
@@ -2769,14 +2807,14 @@ class SentinelManager(QObject):
             if price_ticks < 0: 
                 if self.sl_locked:
                     self.sl_reject_signal.emit()
-                    self.log_signal.emit("GUARD RAIL: SL-reträtt BLOCKERAD. 🔒")
+                    self.log_signal.emit("GUARD RAIL: SL retreat BLOCKED. 🔒")
                     return
             elif price_ticks > 0: 
                 if not self.sl_locked:
                     self.sl_locked = True
                     self.grace_timer.stop()
                     self.grace_time_remaining = 0
-                    self.log_signal.emit("CADET: Risk reducerad. SL-riktning låst tidigt. 🔒")
+                    self.log_signal.emit("CADET: Risk reduced. SL direction locked early. 🔒")
 
         current_price = 0.0
         is_live_nudge = False
@@ -2807,7 +2845,7 @@ class SentinelManager(QObject):
                 if anchor > 0:
                     if (direction == 1 and exact_price >= anchor) or (direction == -1 and exact_price <= anchor):
                         self.sl_reject_signal.emit()
-                        self.log_signal.emit("GUARD RAIL: SL kan inte korsa väntande entré! ⛔")
+                        self.log_signal.emit("GUARD RAIL: SL cannot cross pending entry! ⛔")
                         return
 
             if not is_live_nudge:
@@ -2823,7 +2861,7 @@ class SentinelManager(QObject):
                     new_dist = (self.peak_price - exact_price) * direction
                     if new_dist > 0:
                         self.current_trail_distance = new_dist
-                        self.log_signal.emit(f"⚙️ TRAIL SYNC: Snävare distans satt ({new_dist:.2f} pts)")
+                        self.log_signal.emit(f"⚙️ TRAIL SYNC: Tighter distance set ({new_dist:.2f} pts)")
 
             self.pending_nudges[order_type] = exact_price
             self.nudge_timer.start(400)
@@ -2836,13 +2874,13 @@ class SentinelManager(QObject):
             for p in self.providers:
                 if p.is_connected():
                     p.modify_order(ref, price)
-            self.log_signal.emit(f"API: Överförde uppdatering av {ref}-order ({price:.2f})")
+            self.log_signal.emit(f"API: Transmitted update for {ref} order ({price:.2f})")
             
         self.pending_nudges.clear()
 
         if hasattr(self, '_pending_log_type') and self._pending_log_type:
             ref = self._pending_log_type
-            self.log_signal.emit(f"CADET: {ref}-gräns justerad dynamiskt.")
+            self.log_signal.emit(f"CADET: {ref} limit adjusted dynamically.")
             self._pending_log_type = None
 
     def _start_post_trade_cooldown(self, seconds: int):
@@ -2862,7 +2900,7 @@ class SentinelManager(QObject):
     def handle_dom_place_order(self, action: str, order_type: str, price: float):
         if getattr(self, 'post_trade_cooldown_active', False):
             self.cooldown_reject_signal.emit()
-            self.log_signal.emit("REJECTED: Post-trade cooldown aktiv. ⏳")
+            self.log_signal.emit("REJECTED: Post-trade cooldown active. ⏳")
             return
 
         if self.code_cooldown:
@@ -2879,7 +2917,7 @@ class SentinelManager(QObject):
 
         if self._is_over_max_capacity(side, qty):
             self.max_qty_reject_signal.emit()
-            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) uppnådd.")
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
             return
 
         pending_dir = self._get_pending_direction()
@@ -2895,10 +2933,10 @@ class SentinelManager(QObject):
                 if side == pending_dir:
                     is_scaling = True
                     if order_type == 'STP':
-                        self.log_signal.emit("REJECTED: Endast limit-scales tillåtna när Master är aktiv.")
+                        self.log_signal.emit("REJECTED: Only limit-scales allowed when Master is active.")
                         return
                 else:
-                    self.log_signal.emit("REJECTED: Avbryt motsatta väntande ordrar först.")
+                    self.log_signal.emit("REJECTED: Cancel opposing pending orders first.")
                     return
 
         if is_scaling:
@@ -2910,7 +2948,7 @@ class SentinelManager(QObject):
             for p in self.providers:
                 if p.is_connected():
                     p.place_single_order(action, qty, price, "SCALE", order_type=order_type)
-            self.log_signal.emit(f"DOM: Skickade {action} {order_type} @ {price:.2f} (SCALE)")
+            self.log_signal.emit(f"DOM: Sent {action} {order_type} @ {price:.2f} (SCALE)")
         else:
             base_price = price
             if order_type == 'LMT':
@@ -2922,7 +2960,7 @@ class SentinelManager(QObject):
             for p in self.providers:
                 if p.is_connected():
                     p.place_bracket(action, qty, price, 0.0, sl_price, entry_type=order_type)
-            self.log_signal.emit(f"DOM: Skickade {action} {order_type} @ {price:.2f} med Guard SL vid {sl_price:.2f}")
+            self.log_signal.emit(f"DOM: Sent {action} {order_type} @ {price:.2f} with Guard SL at {sl_price:.2f}")
 
     def handle_dom_modify_qty(self, action: str, price: float):
         qty_increase = self.trade_qty
@@ -2933,7 +2971,7 @@ class SentinelManager(QObject):
         
         if self._is_over_max_capacity(side, qty_increase):
             self.max_qty_reject_signal.emit()
-            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) uppnådd.")
+            self.log_signal.emit(f"REJECTED: Max Qty ({self.max_qty}) reached.")
             return
             
         for p in self.providers:
@@ -2960,13 +2998,13 @@ class SentinelManager(QObject):
                                 for ct in children:
                                     p.ib.placeOrder(ct.contract, ct.order)
                                         
-                                self.log_signal.emit(f"DOM: Skalade {action} parent (och {len(children)} SL/TP) till {new_qty} kontrakt.")
+                                self.log_signal.emit(f"DOM: Scaled {action} parent (and {len(children)} SL/TP) to {new_qty} contracts.")
                                 self.update_ui_state()
                                 return
                                                 
     def move_anchor_group(self, new_price: float):
         if self.pos_qty != 0:
-            self.log_signal.emit("REJECTED: Kan inte flytta Anchor Group under pågående position.")
+            self.log_signal.emit("REJECTED: Cannot move Anchor Group during open position.")
             return
             
         anchor = getattr(self, '_last_pending_anchor', 0.0)
@@ -3025,7 +3063,7 @@ class SentinelManager(QObject):
 
         self.pending_nudges.clear() 
         self._last_pending_anchor = new_price 
-        self.log_signal.emit(f"DOM: Flyttade Master & {count-1} länkade ordrar med {delta:+.2f} pts.")
+        self.log_signal.emit(f"DOM: Moved Master & {count-1} linked orders by {delta:+.2f} pts.")
         self.update_ui_state()
 
     def move_order_to_price(self, order_type: str, new_price: float):
@@ -3071,13 +3109,13 @@ class SentinelManager(QObject):
                 is_retreat = (direction == 1 and new_price < current_sl) or (direction == -1 and new_price > current_sl)
                 if is_retreat and self.sl_locked:
                     self.sl_reject_signal.emit()
-                    self.log_signal.emit("GUARD RAIL: SL-reträtt BLOCKERAD. 🔒")
+                    self.log_signal.emit("GUARD RAIL: SL retreat BLOCKED. 🔒")
                     return
                 elif not is_retreat and not self.sl_locked:
                     self.sl_locked = True
                     self.grace_timer.stop()
                     self.grace_time_remaining = 0
-                    self.log_signal.emit("CADET: Risk reducerad. SL-riktning låst tidigt. 🔒")
+                    self.log_signal.emit("CADET: Risk reduced. SL direction locked early. 🔒")
 
         if order_type == 'SL':
             if self.pos_qty != 0:
@@ -3090,7 +3128,7 @@ class SentinelManager(QObject):
                 worst_allowed = anchor - (max_pts * direction)
                 if (direction == 1 and new_price < worst_allowed) or (direction == -1 and new_price > worst_allowed):
                     self.sl_reject_signal.emit()
-                    self.log_signal.emit(f"GUARD RAIL: Hård riskgräns! Max {max_pts} pts. ⛔")
+                    self.log_signal.emit(f"GUARD RAIL: Hard risk limit! Max {max_pts} pts. ⛔")
                     return
 
         if order_type == 'SL' and self.pos_qty == 0:
@@ -3098,7 +3136,7 @@ class SentinelManager(QObject):
             if anchor > 0:
                 if (direction == 1 and new_price >= anchor) or (direction == -1 and new_price <= anchor):
                     self.sl_reject_signal.emit()
-                    self.log_signal.emit("GUARD RAIL: SL kan inte korsa väntande entré! ⛔")
+                    self.log_signal.emit("GUARD RAIL: SL cannot cross pending entry! ⛔")
                     return
 
         self.pending_nudges[order_type] = new_price
@@ -3132,7 +3170,7 @@ class SentinelManager(QObject):
                         if abs(current_p - price) < (self.min_tick * 0.1):
                             if target == 'TP' and t.order.orderRef == 'TP':
                                 p.ib.cancelOrder(t.order)
-                                self.log_signal.emit(f"DOM: Avbröt TP @ {price:.2f}")
+                                self.log_signal.emit(f"DOM: Cancelled TP @ {price:.2f}")
                                 return
                             elif target == 'ENTRY' and t.order.parentId == 0:
                                 if self.pos_qty == 0 and t.order.orderRef == "ENTRY":
@@ -3143,10 +3181,10 @@ class SentinelManager(QObject):
                                                 if t_sub.order.action == t.order.action:
                                                     p_sub.ib.cancelOrder(t_sub.order)
                                                     count += 1
-                                    self.log_signal.emit(f"DOM: Avbröt {count} länkade entréer för att skydda scales.")
+                                    self.log_signal.emit(f"DOM: Cancelled {count} linked entries to protect scales.")
                                 else:
                                     p.ib.cancelOrder(t.order)
-                                    self.log_signal.emit(f"DOM: Avbröt entré @ {price:.2f}")
+                                    self.log_signal.emit(f"DOM: Cancelled entry @ {price:.2f}")
                                 return
                                                    
 class GlobalHotkeyManager(QObject):
@@ -3228,7 +3266,8 @@ class MjolnirGUI(QWidget):
 
     def init_ui(self):
         self.setWindowTitle("MJÖLNIR - THE CADET")
-        self.expanded_width = 720
+        # MODIFIED: Increased expanded width to accommodate VP column in DOM
+        self.expanded_width = 820
         self.collapsed_width = 380 
         self.setFixedSize(self.expanded_width, 700) 
         self.setStyleSheet("background-color: #1e1e1e; color: #ffffff;")
@@ -3315,7 +3354,7 @@ class MjolnirGUI(QWidget):
         self.log_display = QTextBrowser()
         self.log_display.setFixedHeight(350)
         self.log_display.setStyleSheet("background-color: #0d0d0d; color: #008888; font-family: Consolas; font-size: 9pt; border: 1px solid #222;")
-        self.log_display.append("Cadet Redo.")
+        self.log_display.append("Cadet Ready.")
         left_layout.addWidget(self.log_display)
         left_layout.addStretch(1)
 
@@ -3543,7 +3582,7 @@ class MjolnirGUI(QWidget):
                 self.toggle_lock()
             self.ib_provider.disconnect()
             self.reset_connection_ui()
-            self.update_log("SYSTEM: Anslutningen avslutades normalt.")
+            self.update_log("SYSTEM: Connection terminated normally.")
             return
         
         self.btn_connect.setText("⏳")
@@ -3560,7 +3599,7 @@ class MjolnirGUI(QWidget):
             port = 7497
         
         self.theme_color = "#004466"
-        self.update_log(f"SYSTEM: Försöker ansluta till port {port}...")
+        self.update_log(f"SYSTEM: Attempting to connect to port {port}...")
         QApplication.processEvents() 
         
         self.ib_provider.connect({'port': port})
@@ -3585,7 +3624,7 @@ class MjolnirGUI(QWidget):
                 self.btn_lock.setStyleSheet("background-color: #333333; color: #ffffff; font-size: 14pt; border-radius: 4px; border: 1px solid #555555;")
         else:
             self.reset_connection_ui()
-            self.update_log(f"❌ ANSLUTNING MISSLYCKADES: {account_id}")
+            self.update_log(f"❌ CONNECTION FAILED: {account_id}")
             
     def toggle_lock(self):
         if self.btn_lock.text() == "🔓":
@@ -3660,10 +3699,10 @@ class MjolnirGUI(QWidget):
         if has_anomaly and not self.manager.is_armed:
             if not getattr(self, '_anomaly_logged', False):
                 if data['pos'] != 0:
-                    reason = f"Öppen position ({data['pos']})"
+                    reason = f"Open position ({data['pos']})"
                 else:
-                    reason = f"Väntande order ({data.get('open_orders', 0)})"
-                self.update_log(f"⚠️ ANOMALI: {reason} upptäckt medan systemet är i SAFE-läge!")
+                    reason = f"Pending order ({data.get('open_orders', 0)})"
+                self.update_log(f"⚠️ ANOMALY: {reason} detected while system is in SAFE mode!")
                 self._anomaly_logged = True
 
             if not self.emergency_timer.isActive():
@@ -3674,7 +3713,7 @@ class MjolnirGUI(QWidget):
             self.btn_arm.setStyleSheet("background-color: #ff0000; color: white; font-weight: bold; border-radius: 4px;")
         else:
             if getattr(self, '_anomaly_logged', False):
-                self.update_log("✅ ANOMALI ÅTGÄRDAD: Systemet synkat.")
+                self.update_log("✅ ANOMALY RESOLVED: System synced.")
                 self._anomaly_logged = False
 
             if self.emergency_timer.isActive(): 
@@ -4064,7 +4103,8 @@ class MjolnirGUI(QWidget):
                         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
                         
                     if hasattr(self, 'dom_window'):
-                        self.dom_window.resize(550, self.dom_height_preset)
+                        # MODIFIED: Adjust DOM window resize for new width
+                        self.dom_window.resize(680, self.dom_height_preset)
                         
             except:
                 pass
