@@ -5,7 +5,7 @@
     "dom_scales": {
         "MES": 28,
         "OMXS30": 80,
-        "MNQ": 8,
+        "MNQ": 10,
         "BIT": 8
     },
     "dom_height": 800

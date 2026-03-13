@@ -1,6 +1,6 @@
 # =============================================================================
 # PROJECT: MJÖLNIR TACTICAL HUD (IBKR EDITION)
-# VERSION: 0.9.6
+# VERSION: 0.9.8
 # STANDARDS: STRICT PEP8. NO SEMICOLONS. NO TRUNCATION.
 # =============================================================================
 
@@ -14,7 +14,7 @@ import time
 import asyncio
 import logging 
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 # --- Silence ib_async's internal terminal spam ---
@@ -125,12 +125,11 @@ class TWSInspectorWindow(QWidget):
             self.warning_lbl.hide()
 
 
-# NEW: [UPPGIFT 6 - Bygg Instrument Details Fönstret]
 class InstrumentDetailsWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent, Qt.WindowType.Tool)
         self.setWindowTitle("INSTRUMENT DETAILS")
-        self.setFixedSize(350, 280)
+        self.setFixedSize(350, 480)
         self.setStyleSheet("background-color: #1a1a1a; color: #dddddd; font-family: Consolas;")
         
         layout = QVBoxLayout(self)
@@ -151,9 +150,31 @@ class InstrumentDetailsWindow(QWidget):
         
         eth_time = data.get('eth_time', 'N/A')
         rth_time = data.get('rth_time', 'N/A')
-        html.append(f"<span style='color: #00ff00; font-weight: bold;'>SESSIONS (LOCAL):</span><br>")
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>SESSIONS (EXCHANGE):</span><br>")
         html.append(f"&nbsp;ETH Start: {eth_time}<br>")
         html.append(f"&nbsp;RTH Start: {rth_time}<br><br>")
+
+        htf = data.get('htf_stats', {})
+        ib = data.get('ib_stats', {})
+        
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>MACRO VWAP:</span><br>")
+        if 'W_VWAP' in htf:
+            html.append(f"&nbsp;W: {htf['W_VWAP']:.2f} (± {htf['W_UPPER']-htf['W_VWAP']:.2f})<br>")
+        if 'M_VWAP' in htf:
+            html.append(f"&nbsp;M: {htf['M_VWAP']:.2f} (± {htf['M_UPPER']-htf['M_VWAP']:.2f})<br>")
+        if 'Y_VWAP' in htf:
+            html.append(f"&nbsp;Y: {htf['Y_VWAP']:.2f} (± {htf['Y_UPPER']-htf['Y_VWAP']:.2f})<br>")
+        if not htf:
+            html.append("&nbsp;Waiting for HTF data...<br>")
+        html.append("<br>")
+        
+        html.append(f"<span style='color: #00ff00; font-weight: bold;'>INITIAL BALANCE:</span><br>")
+        lock_str = "🔒" if ib.get('locked') else "⏳"
+        if ib.get('high', 0.0) > 0.0 and ib.get('low', 1e9) < 1e9:
+            html.append(f"&nbsp;HIGH: {ib['high']:.2f} {lock_str}<br>")
+            html.append(f"&nbsp;LOW : {ib['low']:.2f} {lock_str}<br><br>")
+        else:
+            html.append("&nbsp;Waiting for RTH...<br><br>")
 
         stats = data.get('vwap_stats', {})
         
@@ -350,7 +371,6 @@ class DOMWidget(QWidget):
                     rect = QRect(int(self.col_x['lvl']), box_y, int(self.col_widths['lvl']), box_h)
                     self.spawn_inline_edit(target_price, self.manual_levels[target_price], rect)
                 else:
-                    # MODIFIED: [UPPGIFT 1 - UX-Fix för Manuella nivåer]
                     self.manual_levels[clicked_price] = "MAN"
                     self.sig_dom_update_level.emit(clicked_price, "MAN", "ADD")
                     return
@@ -686,7 +706,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(b_qty)
                 painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - tw)/2), y + int(th/3), b_qty)
 
-            # Rita Stop-entréer (Buy)
             if p_round in self.my_stop_entries_buy:
                 b_qty = str(self.my_stop_entries_buy[p_round])
                 painter.fillRect(int(self.col_x['buy']+2), box_y+2, int(self.col_widths['buy']-4), box_h-4, QColor("#1a1a1a"))
@@ -708,7 +727,6 @@ class DOMWidget(QWidget):
                 tw = metrics.horizontalAdvance(s_qty)
                 painter.drawText(int(self.col_x['sell'] + (self.col_widths['sell'] - tw)/2), y + int(th/3), s_qty)
 
-            # Rita Stop-entréer (Sell)
             if p_round in self.my_stop_entries_sell:
                 s_qty = str(self.my_stop_entries_sell[p_round])
                 painter.fillRect(int(self.col_x['sell']+2), box_y+2, int(self.col_widths['sell']-4), box_h-4, QColor("#1a1a1a"))
@@ -800,6 +818,28 @@ class DOMWidget(QWidget):
                     painter.drawText(int(self.col_x['buy'] + (self.col_widths['buy'] - tw)/2), y + int(th/3), tt_str)
                     
             p += self.min_tick
+
+        # NEW: [UPPGIFT 1 - Implementera Off-Screen Price Overlay]
+        if self.current_price > 0:
+            overlay_text = None
+            overlay_y = 0
+            
+            if self.current_price > max_price:
+                overlay_text = f"▲ {self.current_price:.2f}"
+                overlay_y = header_h
+            elif self.current_price < min_price:
+                overlay_text = f"▼ {self.current_price:.2f}"
+                overlay_y = h - 24
+                
+            if overlay_text:
+                painter.fillRect(int(self.col_x['price']), overlay_y, int(self.col_widths['price']), 24, QColor(0, 102, 153, 230))
+                painter.setPen(QPen(QColor("#00ffff"), 1))
+                painter.drawRect(int(self.col_x['price']), overlay_y, int(self.col_widths['price']), 24)
+                painter.setPen(QPen(QColor("#ffffff")))
+                painter.setFont(QFont("Consolas", 9, QFont.Weight.Bold))
+                tw = metrics.horizontalAdvance(overlay_text)
+                painter.drawText(int(self.col_x['price'] + (self.col_widths['price'] - tw)/2), overlay_y + 16, overlay_text)
+
 
 class MjolnirDOMWindow(QWidget):
     def __init__(self, parent=None):
@@ -1018,11 +1058,13 @@ class ProviderSignals(QObject):
     error_occurred = pyqtSignal(int, str)
     contract_loaded = pyqtSignal(float, float) 
     order_filled = pyqtSignal(str, int, str, float)
-    # MODIFIED: [UPPGIFT 2 - Utökad signal för tider och expiry]
     session_times = pyqtSignal(str, str, str, str) 
     historical_vwap_data = pyqtSignal(list)
-    # MODIFIED: [UPPGIFT 3 - Lade till int(timestamp) först i signalen]
     realtime_vwap_bar = pyqtSignal(int, float, float, float, int)
+    
+    htf_snapshot_data = pyqtSignal(str, float, float, float)
+    ib_snapshot_data = pyqtSignal(float, float)
+
 
 class ExecutionProvider(ABC):
     def __init__(self):
@@ -1117,7 +1159,6 @@ class IBKRProvider(ExecutionProvider):
             
         duration = f"{int(diff)} S"
         try:
-            # MODIFIED: [UPPGIFT 3 - Ändrade formatDate till 2 (Unix-timestamps)]
             bars = await self.ib.reqHistoricalDataAsync(
                 self.contract, 
                 endDateTime='', 
@@ -1130,7 +1171,6 @@ class IBKRProvider(ExecutionProvider):
             
             data_list = []
             for bar in bars:
-                # FIX: Säker konvertering av bar.date till unix timestamp
                 ts = int(bar.date.timestamp()) if hasattr(bar.date, 'timestamp') else int(bar.date)
                 data_list.append({
                     'timestamp': ts,
@@ -1145,12 +1185,75 @@ class IBKRProvider(ExecutionProvider):
         except Exception as e:
             self.signals.error_occurred.emit(-1, f"VWAP Fetch Error: {str(e)}")
 
+    def start_htf_snapshot_routine(self, rth_start_dt):
+        loop = asyncio.get_event_loop()
+        loop.create_task(self._async_fetch_htf(rth_start_dt))
+
+    async def _async_fetch_htf(self, rth_start_dt):
+        if not self.contract or not self.is_connected():
+            return
+            
+        async def fetch_and_calc(duration, barsize, name):
+            try:
+                bars = await self.ib.reqHistoricalDataAsync(
+                    self.contract,
+                    endDateTime='',
+                    durationStr=duration,
+                    barSizeSetting=barsize,
+                    whatToShow='TRADES',
+                    useRTH=True,
+                    formatDate=2
+                )
+                vol_sum = 0
+                pv_sum = 0.0
+                p2v_sum = 0.0
+                for bar in bars:
+                    typ_p = (bar.high + bar.low + bar.close) / 3.0
+                    vol_sum += bar.volume
+                    pv_sum += typ_p * bar.volume
+                    p2v_sum += (typ_p ** 2) * bar.volume
+                    
+                if vol_sum > 0:
+                    vwap = pv_sum / vol_sum
+                    var = max(0.0, (p2v_sum / vol_sum) - (vwap ** 2))
+                    sd = math.sqrt(var)
+                    self.signals.htf_snapshot_data.emit(name, vwap, vwap+sd, vwap-sd)
+            except Exception as e:
+                self.signals.error_occurred.emit(-1, f"HTF VWAP Error ({name}): {str(e)}")
+            
+            await asyncio.sleep(2)
+
+        await fetch_and_calc('1 W', '30 mins', 'W')
+        await fetch_and_calc('1 M', '1 hour', 'M')
+        await fetch_and_calc('1 Y', '1 day', 'Y')
+        
+        now = datetime.now(rth_start_dt.tzinfo)
+        ib_end_dt = rth_start_dt + timedelta(hours=1)
+        
+        if now > ib_end_dt:
+            try:
+                end_str = ib_end_dt.strftime('%Y%m%d %H:%M:%S')
+                bars = await self.ib.reqHistoricalDataAsync(
+                    self.contract,
+                    endDateTime=end_str,
+                    durationStr='3600 S',
+                    barSizeSetting='1 min',
+                    whatToShow='TRADES',
+                    useRTH=False,
+                    formatDate=2
+                )
+                if bars:
+                    max_h = max(b.high for b in bars)
+                    min_l = min(b.low for b in bars)
+                    self.signals.ib_snapshot_data.emit(max_h, min_l)
+            except Exception as e:
+                self.signals.error_occurred.emit(-1, f"IB Fetch Error: {str(e)}")
+
     def on_bar_update(self, bars, hasNewBar):
         if not hasNewBar:
             return
         if getattr(self, 'rt_bar_req', None) and bars == self.rt_bar_req:
             bar = bars[-1]
-            # MODIFIED: [UPPGIFT 3 - Konvertera bar.time till Unix timestamp]
             ts = int(bar.time.timestamp()) if hasattr(bar.time, 'timestamp') else int(bar.time)
             self.signals.realtime_vwap_bar.emit(ts, bar.high, bar.low, bar.close, int(bar.volume))
 
@@ -1247,7 +1350,6 @@ class IBKRProvider(ExecutionProvider):
 
         liquid_hours = getattr(details, 'liquidHours', '')
         time_zone = getattr(details, 'timeZoneId', '')
-        # MODIFIED: [UPPGIFT 2 - Hämta ETH-tider och Expiry]
         trading_hours = getattr(details, 'tradingHours', '')
         expiry = getattr(details.contract, 'lastTradeDateOrContractMonth', '')
         self.signals.session_times.emit(liquid_hours, trading_hours, time_zone, expiry)
@@ -1473,7 +1575,6 @@ class SentinelManager(QObject):
         self.code_cooldown = False
         self.last_known_sl = 0.0 
         
-        # MODIFIED: [UPPGIFT 4 - Dubbla VWAP-motorer]
         self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         self.eth_start_ts = 0
@@ -1481,6 +1582,12 @@ class SentinelManager(QObject):
         self.current_expiry = ""
         self.eth_time_str = ""
         self.rth_time_str = ""
+        
+        self.htf_stats = {}
+        self.ib_high = 0.0
+        self.ib_low = 1e9
+        self.ib_locked = False
+        self.htf_levels = {}
         
         self.post_trade_cooldown_active = False
         self.cooldown_remaining = 0
@@ -1534,7 +1641,6 @@ class SentinelManager(QObject):
         self.nudge_timer.setSingleShot(True)
         self.nudge_timer.timeout.connect(self.commit_nudges)
 
-    # MODIFIED: [UPPGIFT 5 - Data-routing]
     def handle_historical_vwap(self, bars_list):
         self.vwap_eth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
         self.vwap_rth = {'vol': 0, 'pv': 0.0, 'p2v': 0.0}
@@ -1556,7 +1662,6 @@ class SentinelManager(QObject):
                 
         self._update_vwap_level()
 
-    # MODIFIED: [UPPGIFT 5 - Data-routing]
     def handle_realtime_vwap(self, ts, high, low, close, volume):
         if volume == 0:
             return
@@ -1573,9 +1678,55 @@ class SentinelManager(QObject):
             self.vwap_rth['pv'] += (typ_price * volume)
             self.vwap_rth['p2v'] += ((typ_price ** 2) * volume)
             
+        if not self.ib_locked and self.rth_start_ts > 0:
+            if self.rth_start_ts <= ts < self.rth_start_ts + 3600:
+                self.ib_high = max(self.ib_high, high)
+                self.ib_low = min(self.ib_low, low)
+                
+                keys_to_remove = [k for k, v in self.htf_levels.items() if v in ["IB HIGH", "IB LOW"]]
+                for k in keys_to_remove:
+                    del self.htf_levels[k]
+                    
+                snap_high = round(round(self.ib_high / self.min_tick) * self.min_tick, 4)
+                snap_low = round(round(self.ib_low / self.min_tick) * self.min_tick, 4)
+                
+                self.htf_levels[snap_high] = "IB HIGH"
+                self.htf_levels[snap_low] = "IB LOW"
+            elif ts >= self.rth_start_ts + 3600:
+                self.ib_locked = True
+                
         self._update_vwap_level()
 
-    # MODIFIED: [UPPGIFT 5 - Value Area-matematik och stackad nivåhantering]
+    def handle_htf_snapshot(self, name, vwap, upper, lower):
+        self.htf_stats[f"{name}_VWAP"] = vwap
+        self.htf_stats[f"{name}_UPPER"] = upper
+        self.htf_stats[f"{name}_LOWER"] = lower
+        
+        snap_vwap = round(round(vwap / self.min_tick) * self.min_tick, 4)
+        snap_upper = round(round(upper / self.min_tick) * self.min_tick, 4)
+        snap_lower = round(round(lower / self.min_tick) * self.min_tick, 4)
+        
+        self.htf_levels[snap_vwap] = f"{name} VWAP"
+        self.htf_levels[snap_upper] = f"+1SD {name}"
+        self.htf_levels[snap_lower] = f"-1SD {name}"
+        self._update_vwap_level()
+
+    def handle_ib_snapshot(self, high, low):
+        self.ib_high = high
+        self.ib_low = low
+        self.ib_locked = True
+        
+        keys_to_remove = [k for k, v in self.htf_levels.items() if v in ["IB HIGH", "IB LOW"]]
+        for k in keys_to_remove:
+            del self.htf_levels[k]
+            
+        snap_high = round(round(high / self.min_tick) * self.min_tick, 4)
+        snap_low = round(round(low / self.min_tick) * self.min_tick, 4)
+        
+        self.htf_levels[snap_high] = "IB HIGH"
+        self.htf_levels[snap_low] = "IB LOW"
+        self._update_vwap_level()
+
     def _update_vwap_level(self):
         self.auto_levels.clear()
         self.current_vwap_stats.clear()
@@ -1613,13 +1764,21 @@ class SentinelManager(QObject):
                 self.current_vwap_stats[f"{prefix}_upper"] = vwap_p + sd
                 self.current_vwap_stats[f"{prefix}_lower"] = vwap_p - sd
                 
+        for price, text in self.htf_levels.items():
+            add_stacked_level(price, text)
+            
         self.update_ui_state()
 
-    # MODIFIED: [UPPGIFT 4 - Parsa både ETH och RTH och starta från ETH]
     def handle_session_times(self, liquid_hours: str, trading_hours: str, timezone_str: str, expiry: str):
         self.current_expiry = expiry
         dt_eth = None
         dt_rth = None
+        
+        self.htf_stats.clear()
+        self.htf_levels.clear()
+        self.ib_high = 0.0
+        self.ib_low = 1e9
+        self.ib_locked = False
         
         def parse_hours(hours_str):
             if not hours_str or not timezone_str: return None
@@ -1637,7 +1796,7 @@ class SentinelManager(QObject):
                         exchange_tz = ZoneInfo(timezone_str)
                         dt_exchange = datetime.strptime(f"{date_part}{time_part}", "%Y%m%d%H%M")
                         dt_exchange = dt_exchange.replace(tzinfo=exchange_tz)
-                        return dt_exchange.astimezone(datetime.now().astimezone().tzinfo)
+                        return dt_exchange
             except:
                 pass
             return None
@@ -1651,7 +1810,7 @@ class SentinelManager(QObject):
         self.eth_time_str = dt_eth.strftime('%H:%M') if dt_eth else "N/A"
         self.rth_time_str = dt_rth.strftime('%H:%M') if dt_rth else "N/A"
         
-        self.log_signal.emit(f"SYSTEM: Tider detekterade. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} lokal tid.")
+        self.log_signal.emit(f"SYSTEM: Tider detekterade. ETH: {self.eth_time_str}, RTH: {self.rth_time_str} ({timezone_str}).")
 
         if dt_eth:
             now = datetime.now(dt_eth.tzinfo)
@@ -1659,6 +1818,8 @@ class SentinelManager(QObject):
                 for p in self.providers:
                     if p.is_connected() and hasattr(p, 'start_vwap_routine'):
                         p.start_vwap_routine(dt_eth)
+                        if dt_rth and hasattr(p, 'start_htf_snapshot_routine'):
+                            p.start_htf_snapshot_routine(dt_rth)
 
     def _get_levels_file_path(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "levels.json")
@@ -1727,6 +1888,8 @@ class SentinelManager(QObject):
         provider.signals.order_filled.connect(self.handle_order_fill)
         provider.signals.historical_vwap_data.connect(self.handle_historical_vwap)
         provider.signals.realtime_vwap_bar.connect(self.handle_realtime_vwap)
+        provider.signals.htf_snapshot_data.connect(self.handle_htf_snapshot)
+        provider.signals.ib_snapshot_data.connect(self.handle_ib_snapshot)
         self.providers.append(provider)
 
     def handle_contract_info(self, min_tick, multiplier):
@@ -2054,7 +2217,6 @@ class SentinelManager(QObject):
         elif pending_direction != 0:
             direction_to_send = pending_direction
 
-        # MODIFIED: [UPPGIFT 5 - Data-routing och Value Area till GUI]
         data = {
             'pos': int(self.pos_qty),
             'avg': self.avg_price,
@@ -2096,6 +2258,8 @@ class SentinelManager(QObject):
             'auto_levels': self.auto_levels,
             
             'vwap_stats': getattr(self, 'current_vwap_stats', {}),
+            'htf_stats': getattr(self, 'htf_stats', {}),
+            'ib_stats': {'high': self.ib_high, 'low': self.ib_low, 'locked': getattr(self, 'ib_locked', False)},
             'expiry': self.current_expiry,
             'eth_time': getattr(self, 'eth_time_str', 'N/A'),
             'rth_time': getattr(self, 'rth_time_str', 'N/A')
@@ -2996,7 +3160,6 @@ class MjolnirGUI(QWidget):
         self.ib_provider = IBKRProvider()
         self.manager.add_provider(self.ib_provider)
         
-        # NEW: [UPPGIFT 6 - Skapa instans av detalj-fönstret]
         self.details_window = InstrumentDetailsWindow(self)
         
         self.init_ui()
@@ -3085,7 +3248,6 @@ class MjolnirGUI(QWidget):
         self.btn_inspector.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
         self.btn_inspector.clicked.connect(self.toggle_inspector)
 
-        # MODIFIED: [UPPGIFT 6 - Ersatte DOM-knappen med INST-knappen]
         self.btn_details = QPushButton("📊 INST")
         self.btn_details.setFixedSize(65, 25)
         self.btn_details.setStyleSheet("background-color: #222; color: #888; border: 1px solid #333; font-weight: bold; border-radius: 4px;")
@@ -3676,7 +3838,6 @@ class MjolnirGUI(QWidget):
         if self.active_instrument_name:
             self.dom_window.header_title.setText(f"MICRO-DOM ({self.active_instrument_name})")
 
-        # MODIFIED: [UPPGIFT 6 - Uppdatera fönstret om det är öppet]
         if self.details_window.isVisible():
             self.details_window.update_details(data)
 
@@ -3712,7 +3873,6 @@ class MjolnirGUI(QWidget):
         else:
             self.inspector_window.show()
 
-    # NEW: [UPPGIFT 6 - Ny metod för att toggla detalj-fönstret]
     def toggle_details(self):
         if self.details_window.isVisible():
             self.details_window.hide()
@@ -3861,7 +4021,7 @@ class MjolnirGUI(QWidget):
                         self.btn_dom_height.setText(f"↕ {self.dom_height_preset}px")
                         
                     if hasattr(self, 'dom_window'):
-                        self.dom_window.resize(450, self.dom_height_preset)
+                        self.dom_window.resize(550, self.dom_height_preset)
                         
             except:
                 pass
